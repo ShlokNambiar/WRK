@@ -1,0 +1,30 @@
+# Dependencies
+node_modules
+
+# Build output
+dist
+.DS_Store
+*.local
+
+# Secrets / env — NEVER commit
+.env
+.env.*
+!.env.example
+*.keystore
+*.jks
+google-services.json
+
+# Old single-user workaround scripts (contain a write secret; local-only)
+scripts/
+
+# Capacitor / Android build artifacts
+android/.gradle
+android/build
+android/app/build
+android/app/release
+android/local.properties
+android/.idea
+android/captures
+android/*.iml
+*.apk
+*.aab

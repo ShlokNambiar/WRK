@@ -1,0 +1,33 @@
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: #0a0a0a;
+  /* prevent the page itself from rubber-banding on mobile; the in-app
+     scroller handles scrolling */
+  overscroll-behavior: none;
+}
+
+/* Hide scrollbars on the in-app scrollers */
+.wrk-scroll::-webkit-scrollbar { display: none; }
+.wrk-scroll { scrollbar-width: none; }
+
+/* Keyboard-only focus ring (no ring on mouse/touch) */
+.hq-focus:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px #f7f7f4, 0 0 0 4px #1a18f0 !important;
+  border-radius: 14px;
+}
+
+/* Respect reduced-motion at the CSS layer too (framer-motion is handled
+   in JS via MotionConfig reducedMotion="user") */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
