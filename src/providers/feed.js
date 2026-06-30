@@ -13,7 +13,8 @@
 // FeedEvent: { id, title, start: ISO, end: ISO, location?, joinUrl?, description?,
 //              movedFrom?, attendees?: [{ email, self?, responseStatus? }] }
 import { normalizeEvent } from './calendar.js'
-import { getFeedUrl, getFeedKey, readCache, writeCache } from '../lib/feedConfig.js'
+import { readCache, writeCache } from '../lib/feedConfig.js'
+import { supabase } from '../lib/supabase.js'
 
 export function isoDate(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -61,26 +62,49 @@ export function getDemoPayload(now = new Date()) {
   }
 }
 
-// Fetch the feed. Returns { payload, meta:{ demo, stale, error } }.
+// Fetch the feed. Returns { payload, meta:{ demo, stale, error, needsReauth } }.
+//
+// When a Supabase user is signed in, read THAT user's own `feeds` row (RLS
+// scopes the query to them). Logged-out / empty / error all fall back to the
+// cache and finally the labeled demo payload, exactly as before.
 export async function getFeed(now = new Date()) {
-  const url = getFeedUrl()
-  if (!url) return { payload: getDemoPayload(now), meta: { demo: true, stale: false, error: false } }
+  const base = { demo: false, stale: false, error: false, needsReauth: false }
+
+  let user = null
+  try {
+    const { data } = await supabase.auth.getUser()
+    user = data?.user || null
+  } catch {
+    user = null
+  }
+
+  // Logged out → demo (signing in via Account is the path to a real feed).
+  if (!user) {
+    return { payload: getDemoPayload(now), meta: { ...base, demo: true } }
+  }
 
   try {
-    const key = getFeedKey()
-    const headers = key ? { apikey: key, Authorization: `Bearer ${key}` } : {}
-    const res = await fetch(url, { headers })
-    if (!res.ok) throw new Error('feed ' + res.status)
-    let data = await res.json()
-    // Supabase REST returns an array of rows; unwrap {payload} or the row itself.
-    if (Array.isArray(data)) data = data[0]?.payload || data[0] || null
-    else if (data && data.payload) data = data.payload
-    if (!data || !data.days) throw new Error('bad feed shape')
+    const { data: row, error } = await supabase
+      .from('feeds')
+      .select('payload, needs_reauth')
+      .maybeSingle()
+    if (error) throw error
+
+    const needsReauth = !!row?.needs_reauth
+    const data = row?.payload || null
+
+    // No feed built yet (or malformed) → cache, else labeled demo. Still surface reauth.
+    if (!data || !data.days) {
+      const cached = readCache()
+      if (cached) return { payload: cached, meta: { ...base, stale: true, needsReauth } }
+      return { payload: getDemoPayload(now), meta: { ...base, demo: true, needsReauth } }
+    }
+
     writeCache(data)
-    return { payload: data, meta: { demo: false, stale: false, error: false } }
+    return { payload: data, meta: { ...base, needsReauth } }
   } catch {
     const cached = readCache()
-    if (cached) return { payload: cached, meta: { demo: false, stale: true, error: true } }
-    return { payload: getDemoPayload(now), meta: { demo: true, stale: false, error: true } }
+    if (cached) return { payload: cached, meta: { ...base, stale: true, error: true } }
+    return { payload: getDemoPayload(now), meta: { ...base, demo: true, error: true } }
   }
 }

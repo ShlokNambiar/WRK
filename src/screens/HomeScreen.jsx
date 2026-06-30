@@ -9,7 +9,7 @@ import { s } from '../style.js'
 import { C, FONT_SERIF, FONT_SANS, SPRING } from '../theme.js'
 
 export default function HomeScreen({ day, mobile, reduced, onAddTask, goToAccount }) {
-  const { greeting, brief, timeline, tasks, nowLabel, toggleTask, profile, feedMeta, loading } = day
+  const { greeting, brief, timeline, tasks, nowLabel, toggleTask, profile, feedMeta, loading, isPro } = day
   const demo = feedMeta?.demo
   const headerTop = mobile ? 'calc(14px + env(safe-area-inset-top))' : '54px'
   const nowIndex = timeline.findIndex((e) => !e.isPast)
@@ -95,6 +95,17 @@ export default function HomeScreen({ day, mobile, reduced, onAddTask, goToAccoun
           <p style={{ fontSize: 12.5, color: C.muted, margin: '6px 0 0' }}>{demo ? '✦ Sample tasks — set up your feed' : '✦ Auto-drafted from your inbox & calendar'}</p>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 11, marginTop: 14 }}>
+            {!isPro && (
+              <Pressable onPress={goToAccount} scale={0.99}
+                style={s('display:flex;align-items:center;gap:12px;padding:14px;border-radius:18px;background:#eceaf9;border:1px solid #ddd9f7;width:100%;text-align:left')}>
+                <span style={s('flex:none;width:30px;height:30px;border-radius:9px;background:#1a18f0;display:flex;align-items:center;justify-content:center;font-size:15px')}>✦</span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ display: 'block', fontSize: 13.5, fontWeight: 600, color: C.ink }}>Upgrade to Pro</span>
+                  <span style={{ display: 'block', fontSize: 12, color: C.muted, marginTop: 2 }}>See the emails that need a reply</span>
+                </span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: C.blue, flex: 'none' }}>Upgrade ›</span>
+              </Pressable>
+            )}
             {openTasks.map((t) => <TaskRow key={t.id} task={t} onToggle={toggleTask} reduced={reduced} />)}
             <Pressable ariaLabel="Add a task" onPress={onAddTask} scale={0.985}
               style={s('display:flex;align-items:center;gap:13px;padding:13px;border-radius:18px;border:2px dashed #d8d7cf;background:transparent;width:100%')}>

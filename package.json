@@ -16,6 +16,8 @@
     "@capacitor/local-notifications": "^8.2.0",
     "@capacitor/status-bar": "^8.0.2",
     "@fontsource/newsreader": "^5.2.10",
+    "@revenuecat/purchases-capacitor": "^13.2.0",
+    "@supabase/supabase-js": "^2.110.0",
     "framer-motion": "^12.40.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

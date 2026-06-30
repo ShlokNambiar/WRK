@@ -4,7 +4,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { getFeed, normalizeDay, isoDate } from '../providers/feed.js'
 import { loadState, saveState } from '../lib/storage.js'
-import { isFeedConfigured, clearFeed as clearFeedConfig } from '../lib/feedConfig.js'
+import { clearCache } from '../lib/feedConfig.js'
+import { getSession, onAuthChange, signOut } from '../lib/supabase.js'
+import { syncProviderToken } from '../lib/syncToken.js'
+import { getTier } from '../providers/entitlement.js'
+import { initBilling, purchasePro } from '../lib/billing.js'
 import { initNotifications, scheduleDailyBrief, scheduleTaskReminder } from '../lib/notifications.js'
 import {
   buildTimeline, deriveAutoTasks, buildBrief, buildGreeting, mergeTasks, groupTasks, fmtTime,
@@ -15,9 +19,13 @@ const DEFAULT_SETTINGS = { briefTime: '7:00 AM', autoDraft: true }
 export function useDayModel() {
   const [now, setNow] = useState(() => new Date())
   const [feed, setFeed] = useState(null)
-  const [meta, setMeta] = useState({ demo: true, stale: false, error: false })
+  const [meta, setMeta] = useState({ demo: true, stale: false, error: false, needsReauth: false })
   const [loading, setLoading] = useState(true)
   const [selectedDate, setSelectedDate] = useState(() => isoDate(new Date()))
+
+  // auth + entitlement
+  const [session, setSession] = useState(null)
+  const [tier, setTier] = useState('free')
 
   // user-owned state
   const [manualTasks, setManualTasks] = useState([])
@@ -36,7 +44,30 @@ export function useDayModel() {
     setHydrated(true)
   }, [])
 
-  // fetch the feed
+  // auth: load the session, keep it in sync, and on first Google consent push
+  // the provider refresh token to the backend. Tier follows the session.
+  useEffect(() => {
+    let on = true
+    getSession().then((s) => {
+      if (!on) return
+      setSession(s)
+      if (s) { syncProviderToken(s); getTier().then((t) => on && setTier(t)) }
+    })
+    const sub = onAuthChange((_event, s) => {
+      setSession(s)
+      if (s) { syncProviderToken(s); getTier().then((t) => setTier(t)) }
+      else setTier('free')
+    })
+    return () => { on = false; sub.unsubscribe() }
+  }, [])
+
+  // fetch the feed (re-runs when the session changes — getFeed reads the
+  // signed-in user's own row)
+  const sessionUserId = session?.user?.id || null
+
+  // billing: configure RevenueCat with the Supabase user id (no-op on web /
+  // until keys exist) so purchases map back to this account via the webhook.
+  useEffect(() => { if (sessionUserId) initBilling(sessionUserId) }, [sessionUserId])
   const refresh = useCallback(() => {
     setLoading(true)
     let on = true
@@ -44,7 +75,7 @@ export function useDayModel() {
       .then(({ payload, meta }) => { if (!on) return; setFeed(payload); setMeta(meta) })
       .finally(() => { if (on) setLoading(false) })
     return () => { on = false }
-  }, [now])
+  }, [now, sessionUserId])
   useEffect(() => refresh(), [refresh])
 
   // advance `now` + refetch on focus/resume (keeps the day correct across midnight)
@@ -68,7 +99,9 @@ export function useDayModel() {
   const isToday = selectedDate === todayKey
 
   const profile = feed?.profile || { name: '', email: '', avatarUrl: null }
-  const emailTasks = useMemo(() => feed?.emailTasks || [], [feed])
+  // Email tasks are a Pro feature. Free / logged-out users get an upsell card.
+  const proTier = tier === 'pro'
+  const emailTasks = useMemo(() => (proTier ? (feed?.emailTasks || []) : []), [feed, proTier])
   const events = useMemo(() => normalizeDay(feed?.days?.[selectedDate] || []), [feed, selectedDate])
   const datesWithEvents = useMemo(() => new Set(Object.keys(feed?.days || {})), [feed])
 
@@ -134,7 +167,24 @@ export function useDayModel() {
   }, [])
 
   const setSetting = useCallback((k, v) => setSettings((s) => ({ ...s, [k]: v })), [])
-  const disconnect = useCallback(() => { clearFeedConfig(); setNow(new Date()) }, [])
+  const disconnect = useCallback(async () => {
+    await signOut()
+    clearCache()
+    setFeed(null)
+    setNow(new Date())
+  }, [])
+
+  // start the Pro purchase flow; refresh tier on success. Returns the RevenueCat
+  // status ('pro' | 'unavailable' | 'cancelled' | ...) so the UI can respond.
+  const upgradeToPro = useCallback(async () => {
+    const r = await purchasePro()
+    if (r.status === 'pro') getTier().then(setTier)
+    return r
+  }, [])
+
+  const user = session?.user || null
+  const signedIn = !!session
+  const isPro = tier === 'pro'
 
   return {
     loading, profile, greeting, now, nowLabel: fmtTime(now),
@@ -142,7 +192,9 @@ export function useDayModel() {
     selectedDate, setSelectedDate, datesWithEvents, isToday,
     settings, setSetting,
     toggleTask, addTask, editTask, deleteTask, reorderTasks,
-    feedMeta: meta, feedConfigured: isFeedConfigured(), generatedAt: feed?.generatedAt || null,
-    refresh, disconnect,
+    // auth + entitlement
+    session, user, signedIn, tier, isPro, upgradeToPro,
+    feedMeta: meta, feedConfigured: signedIn, generatedAt: feed?.generatedAt || null,
+    refresh, disconnect, signOut: disconnect,
   }
 }
