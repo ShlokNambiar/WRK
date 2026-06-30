@@ -8,6 +8,14 @@ import { SUPABASE_URL, GOOGLE_SCOPES } from './supabase.js'
 const STORE_TOKEN_URL = `${SUPABASE_URL}/functions/v1/store-token`
 const SCOPES = GOOGLE_SCOPES.split(' ').filter(Boolean)
 
+function deviceTz() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || null
+  } catch {
+    return null
+  }
+}
+
 export async function syncProviderToken(session) {
   const refresh = session?.provider_refresh_token
   const accessToken = session?.access_token
@@ -20,7 +28,7 @@ export async function syncProviderToken(session) {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${accessToken}`,
       },
-      body: JSON.stringify({ provider_refresh_token: refresh, scopes: SCOPES }),
+      body: JSON.stringify({ provider_refresh_token: refresh, scopes: SCOPES, tz: deviceTz() }),
     })
     if (!res.ok) {
       console.warn('[syncToken] store-token failed', res.status)

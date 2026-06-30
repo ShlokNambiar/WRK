@@ -1,10 +1,7 @@
-// Calendar provider. Normalizes raw Google-Calendar-shaped events into the
-// internal Event model the rest of the app consumes. Swap the source by
-// changing SOURCE — googleCalendar.js implements the same getRawEvents(now).
-import { getRawEvents as getMockEvents } from './mockCalendar.js'
-import { getRawEvents as getGoogleEvents } from './googleCalendar.js'
-import { getAccessToken, isConnected } from '../lib/googleAuth.js'
-
+// Normalizes raw Google-Calendar-shaped events (the `items` the feed emits) into
+// the internal Event model the rest of the app consumes. The app no longer does
+// any on-device Google access — events arrive via the server-built feed — so this
+// is a pure transform with no auth/network code.
 const URL_RE = /(https?:\/\/[^\s)]+)/i
 
 // Raw Google event -> internal Event
@@ -33,15 +30,4 @@ export function normalizeEvent(e) {
     docLink: docMatch ? docMatch[1] : null,
     movedFrom: e._movedFrom || null,
   }
-}
-
-export async function getTodayEvents(now = new Date()) {
-  // Real Google data when connected; mock only when never connected. When a
-  // connection exists but the token is momentarily unavailable (expired refresh),
-  // return empty rather than fake data the user might mistake for real.
-  const token = await getAccessToken()
-  const raw = token ? await getGoogleEvents(now) : isConnected() ? [] : await getMockEvents(now)
-  return raw
-    .map(normalizeEvent)
-    .sort((a, b) => a.start - b.start)
 }

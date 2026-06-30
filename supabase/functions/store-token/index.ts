@@ -22,7 +22,7 @@ Deno.serve(async (req) => {
   const { data: { user }, error: uerr } = await userClient.auth.getUser();
   if (uerr || !user) return json({ error: "invalid authorization" }, 401);
 
-  let body: { provider_refresh_token?: string; scopes?: unknown };
+  let body: { provider_refresh_token?: string; scopes?: unknown; tz?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -43,6 +43,13 @@ Deno.serve(async (req) => {
     p_scopes: scopes,
   });
   if (error) return json({ error: error.message }, 500);
+
+  // Capture the device timezone so the daily feed builds the user's real "today"
+  // (otherwise non-IST users get a day-key mismatch and a blank calendar).
+  const tz = typeof body?.tz === "string" && body.tz ? body.tz : null;
+  if (tz) {
+    await admin.from("profiles").update({ tz }).eq("id", user.id);
+  }
 
   return new Response(null, { status: 204 });
 });

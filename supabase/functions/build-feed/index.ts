@@ -26,20 +26,32 @@ const admin = createClient(SUPABASE_URL, SERVICE_KEY);
 type UserRow = { user_id: string; tier: string; tz: string; name: string; email: string };
 
 async function loadUsers(userId?: string): Promise<UserRow[]> {
-  // google_tokens marks who has connected Google. Join profile + entitlement.
-  let q = admin
-    .from("google_tokens")
-    .select("user_id, profiles(name, email, tz), entitlements(tier)");
-  if (userId) q = q.eq("user_id", userId);
-  const { data, error } = await q;
-  if (error) throw new Error("loadUsers: " + error.message);
-  return (data ?? []).map((r: any) => ({
-    user_id: r.user_id,
-    tier: r.entitlements?.tier ?? "free",
-    tz: r.profiles?.tz ?? "Asia/Kolkata",
-    name: r.profiles?.name ?? "there",
-    email: r.profiles?.email ?? "",
-  }));
+  // google_tokens marks who has connected Google. profiles/entitlements share a
+  // parent (auth.users) but have no direct FK to google_tokens, so PostgREST
+  // can't embed them — fetch each table and join in JS by user id.
+  let tq = admin.from("google_tokens").select("user_id");
+  if (userId) tq = tq.eq("user_id", userId);
+  const { data: toks, error: tErr } = await tq;
+  if (tErr) throw new Error("loadUsers tokens: " + tErr.message);
+  const ids = (toks ?? []).map((t: any) => t.user_id);
+  if (ids.length === 0) return [];
+
+  const [{ data: profs }, { data: ents }] = await Promise.all([
+    admin.from("profiles").select("id, name, email, tz").in("id", ids),
+    admin.from("entitlements").select("user_id, tier").in("user_id", ids),
+  ]);
+  const pById = new Map((profs ?? []).map((p: any) => [p.id, p]));
+  const eById = new Map((ents ?? []).map((e: any) => [e.user_id, e]));
+  return ids.map((id: string) => {
+    const p: any = pById.get(id) || {};
+    return {
+      user_id: id,
+      tier: (eById.get(id) as any)?.tier ?? "free",
+      tz: p.tz ?? "Asia/Kolkata",
+      name: p.name ?? "there",
+      email: p.email ?? "",
+    };
+  });
 }
 
 async function buildForUser(u: UserRow, now: Date): Promise<{ ok: boolean; reason?: string }> {
@@ -83,7 +95,13 @@ async function buildForUser(u: UserRow, now: Date): Promise<{ ok: boolean; reaso
     return { ok: true };
   } catch (e) {
     if (e instanceof TokenRevokedError) {
-      await admin.from("feeds").update({ needs_reauth: true }).eq("user_id", u.user_id);
+      // Update the existing row (preserves any prior payload); if the user has no
+      // feed row yet (first build), seed a minimal one so the flag isn't lost.
+      const { data: upd } = await admin.from("feeds")
+        .update({ needs_reauth: true }).eq("user_id", u.user_id).select("user_id");
+      if (!upd || upd.length === 0) {
+        await admin.from("feeds").insert({ user_id: u.user_id, payload: {}, needs_reauth: true });
+      }
       return { ok: false, reason: "needs_reauth" };
     }
     return { ok: false, reason: "error: " + (e as Error).message };
@@ -93,7 +111,7 @@ async function buildForUser(u: UserRow, now: Date): Promise<{ ok: boolean; reaso
 Deno.serve(async (req) => {
   // Internal-only: require the service-role key as Bearer.
   const auth = req.headers.get("Authorization") ?? "";
-  if (auth !== `Bearer ${SERVICE_KEY}`) return json({ error: "unauthorized" }, 401);
+  if (!SERVICE_KEY || auth !== `Bearer ${SERVICE_KEY}`) return json({ error: "unauthorized" }, 401);
 
   let body: { user_id?: string } = {};
   if (req.headers.get("content-length") && req.headers.get("content-length") !== "0") {
