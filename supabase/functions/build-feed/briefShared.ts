@@ -8,21 +8,27 @@
 import type { Brief, FeedEvent, EmailTask } from './buildPayload.ts'
 
 export const SYSTEM = `You write a warm, concise "morning brief" for a personal productivity app.
-Given today's calendar events and the emails that need a reply, respond with ONLY a JSON object — no prose, no markdown fences — matching exactly:
+Given today's meetings, reminders/blocks, and the emails that need a reply, respond with ONLY a JSON object — no prose, no markdown fences — matching exactly:
 {"runs":[{"text":"..."},{"text":"...","emph":true}],"stats":[{"n":"<count>","label":"meetings"},{"n":"<count>","label":"to do"},{"n":"<count>","label":"flagged"}],"text":"..."}
 - runs: 1-3 short fragments that read as one warm sentence or two; set "emph":true on at most one fragment to highlight the most important thing.
-- stats: exactly three, in this order: meetings (event count), to do (email-task count), flagged (urgent email-task count).
+- stats: exactly three, in this order: meetings (count of actual MEETINGS only — never count reminders/blocks as meetings), to do (email-task count), flagged (urgent email-task count).
 - text: the same brief as a single plain string.
+- Reminders/blocks are personal items, not meetings — you may mention them, but never describe them as meetings.
 Keep it human and brief. Never invent events or emails that were not provided.`
 
 export function userContent(events: FeedEvent[], emailTasks: EmailTask[]): string {
-  const evLines = events.length
-    ? events.map((e) => `- ${e.title} @ ${e.start}`).join('\n')
+  const meetings = events.filter((e) => e.kind === 'meeting')
+  const reminders = events.filter((e) => e.kind !== 'meeting')
+  const meetLines = meetings.length
+    ? meetings.map((e) => `- ${e.title} @ ${e.start}`).join('\n')
+    : '(none)'
+  const remLines = reminders.length
+    ? reminders.map((e) => `- ${e.title} @ ${e.start}`).join('\n')
     : '(none)'
   const mailLines = emailTasks.length
     ? emailTasks.map((t) => `- ${t.title} (${t.meta})${t.urgent ? ' [urgent]' : ''}`).join('\n')
     : '(none)'
-  return `Today's meetings:\n${evLines}\n\nEmails needing a reply:\n${mailLines}\n\nCounts — meetings: ${events.length}, to do: ${emailTasks.length}, flagged: ${emailTasks.filter((t) => t.urgent).length}.`
+  return `Today's meetings:\n${meetLines}\n\nReminders / blocks (NOT meetings, do not count as meetings):\n${remLines}\n\nEmails needing a reply:\n${mailLines}\n\nCounts — meetings: ${meetings.length}, to do: ${emailTasks.length}, flagged: ${emailTasks.filter((t) => t.urgent).length}.`
 }
 
 export function validateBrief(obj: unknown): Brief {

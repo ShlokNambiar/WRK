@@ -98,27 +98,37 @@ function headerVal(payload: any, name: string): string {
   return h?.value || ''
 }
 
+// Fetch a wider pool of candidates (the noise filter in buildEmailTasks drops
+// newsletters/no-reply, so we over-fetch to still land ~6 real ones). We pull
+// the List-Unsubscribe header — its mere presence flags bulk mail — but only as
+// a signal; it's never stored in the feed.
 export async function fetchActionableUnread(
   accessToken: string,
   fetchFn: FetchFn = fetch,
-): Promise<{ messages: { threadId: string; subject: string; from: string }[] }> {
+): Promise<{ messages: { threadId: string; subject: string; from: string; listUnsubscribe: string }[] }> {
   const headers = { Authorization: `Bearer ${accessToken}` }
-  const listQs = new URLSearchParams({ q: GMAIL_QUERY, maxResults: '6' })
+  const listQs = new URLSearchParams({ q: GMAIL_QUERY, maxResults: '20' })
   const listRes = await fetchFn(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${listQs}`, { headers })
   if (listRes.status === 401) throw new TokenRevokedError('gmail 401')
   if (!listRes.ok) throw new Error('gmail list ' + listRes.status)
   const list = await listRes.json()
   const ids: { id: string }[] = list?.messages ?? []
 
-  const out: { threadId: string; subject: string; from: string }[] = []
-  for (const { id } of ids.slice(0, 6)) {
+  const out: { threadId: string; subject: string; from: string; listUnsubscribe: string }[] = []
+  for (const { id } of ids.slice(0, 20)) {
     const detQs = new URLSearchParams({ format: 'metadata' })
     detQs.append('metadataHeaders', 'Subject')
     detQs.append('metadataHeaders', 'From')
+    detQs.append('metadataHeaders', 'List-Unsubscribe')
     const detRes = await fetchFn(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?${detQs}`, { headers })
     if (!detRes.ok) continue
     const det = await detRes.json()
-    out.push({ threadId: det.threadId, subject: headerVal(det, 'Subject'), from: headerVal(det, 'From') })
+    out.push({
+      threadId: det.threadId,
+      subject: headerVal(det, 'Subject'),
+      from: headerVal(det, 'From'),
+      listUnsubscribe: headerVal(det, 'List-Unsubscribe'),
+    })
   }
   return { messages: out }
 }

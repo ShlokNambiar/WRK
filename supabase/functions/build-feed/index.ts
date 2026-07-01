@@ -8,7 +8,7 @@
 // instead we require the caller to present the service-role key as a Bearer
 // token (pg_cron does this). No client can reach it.
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import { buildEvents, buildEmailTasks, templateBrief, assemblePayload, type Brief, type FeedEvent, type EmailTask } from "./buildPayload.ts";
+import { buildEvents, buildEmailTasks, templateBrief, assemblePayload, computeStats, type Brief, type FeedEvent, type EmailTask } from "./buildPayload.ts";
 import { mintAccessToken, fetchTodayEvents, fetchActionableUnread, TokenRevokedError } from "./google.ts";
 import { claudeBrief } from "./claudeBrief.ts";
 import { geminiBrief } from "./geminiBrief.ts";
@@ -89,6 +89,10 @@ async function buildForUser(u: UserRow, now: Date): Promise<{ ok: boolean; reaso
     } else {
       brief = templateBrief(events, []); // Free: calendar only, no Gmail
     }
+
+    // The AI writes the prose; the headline counts are always the deterministic
+    // ones (meetings-by-kind), so a model miscount can never surface wrong numbers.
+    brief.stats = computeStats(events, emailTasks);
 
     const today = new Intl.DateTimeFormat("en-CA", { timeZone: u.tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
     const payload = assemblePayload({

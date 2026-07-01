@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildEvents, buildEmailTasks, templateBrief, assemblePayload } from './buildPayload.ts'
+import { buildEvents, buildEmailTasks, templateBrief, assemblePayload, computeStats, isActionableEmail } from './buildPayload.ts'
 
 // ---- buildEvents: Google Calendar events.list -> FeedEvent[] ----
 test('buildEvents maps a timed event with all fields', () => {
@@ -27,8 +27,64 @@ test('buildEvents maps a timed event with all fields', () => {
     joinUrl: 'https://meet.google.com/abc',
     description: 'agenda',
     movedFrom: null,
+    kind: 'meeting', // has a join link
     attendees: [{ email: 'you@x.com', self: true, organizer: false, responseStatus: 'accepted' }],
   })
+})
+
+// ---- buildEvents: meeting vs reminder classification ----
+test('buildEvents marks an event with other attendees as a meeting', () => {
+  const raw = { items: [{
+    id: 'm', summary: 'Sync with Priya',
+    start: { dateTime: '2026-07-01T10:00:00Z' }, end: { dateTime: '2026-07-01T10:30:00Z' },
+    attendees: [{ email: 'you@x.com', self: true }, { email: 'priya@x.com' }],
+  }] }
+  assert.equal(buildEvents(raw)[0].kind, 'meeting')
+})
+
+test('buildEvents marks a video-link event with no other attendees as a meeting', () => {
+  const raw = { items: [{
+    id: 'v', summary: 'Client call',
+    start: { dateTime: '2026-07-01T10:00:00Z' }, end: { dateTime: '2026-07-01T10:30:00Z' },
+    hangoutLink: 'https://meet.google.com/z',
+  }] }
+  assert.equal(buildEvents(raw)[0].kind, 'meeting')
+})
+
+test('buildEvents marks an all-day event as a reminder', () => {
+  const raw = { items: [{ id: 'a', summary: 'Pay rent', start: { date: '2026-07-01' }, end: { date: '2026-07-02' } }] }
+  assert.equal(buildEvents(raw)[0].kind, 'reminder')
+})
+
+test('buildEvents marks a solo timed block as a reminder', () => {
+  const raw = { items: [{
+    id: 's', summary: 'Focus: write spec',
+    start: { dateTime: '2026-07-01T14:00:00Z' }, end: { dateTime: '2026-07-01T15:00:00Z' },
+    attendees: [{ email: 'you@x.com', self: true }],
+  }] }
+  assert.equal(buildEvents(raw)[0].kind, 'reminder')
+})
+
+test('buildEvents marks focusTime / outOfOffice eventType as a reminder even with a join link', () => {
+  const raw = { items: [{
+    id: 'f', summary: 'Focus time', eventType: 'focusTime',
+    start: { dateTime: '2026-07-01T14:00:00Z' }, end: { dateTime: '2026-07-01T16:00:00Z' },
+    hangoutLink: 'https://meet.google.com/should-not-count',
+  }] }
+  assert.equal(buildEvents(raw)[0].kind, 'reminder')
+})
+
+// ---- computeStats: meetings counted by kind, not raw event count ----
+test('computeStats counts only meetings, not reminders', () => {
+  const events = [
+    { kind: 'meeting' }, { kind: 'meeting' }, { kind: 'reminder' }, { kind: 'reminder' },
+  ]
+  const emailTasks = [{ urgent: true }, {}]
+  assert.deepEqual(computeStats(events, emailTasks), [
+    { n: '2', label: 'meetings' },
+    { n: '2', label: 'to do' },
+    { n: '1', label: 'flagged' },
+  ])
 })
 
 test('buildEvents handles empty + all-day, skips cancelled', () => {
@@ -77,18 +133,44 @@ test('buildEmailTasks maps subject+sender, never the body/snippet', () => {
   assert.ok(!blob.includes('ANOTHER_SECRET'))
 })
 
-test('buildEmailTasks caps at 6', () => {
+test('buildEmailTasks caps at 6 (after filtering)', () => {
   const many = { messages: Array.from({ length: 12 }, (_, i) => ({ threadId: 't' + i, subject: 's' + i, from: 'a@b.com' })) }
   assert.equal(buildEmailTasks(many).length, 6)
 })
 
+// ---- isActionableEmail: the default noise filter ----
+test('isActionableEmail drops bulk mail carrying a List-Unsubscribe header', () => {
+  assert.equal(isActionableEmail({ from: 'News <news@brand.com>', listUnsubscribe: '<https://brand.com/u>' }), false)
+  assert.equal(isActionableEmail({ from: 'Sarah <sarah@x.com>', listUnsubscribe: '' }), true)
+})
+
+test('isActionableEmail drops no-reply / automated senders', () => {
+  assert.equal(isActionableEmail({ from: 'no-reply@service.com' }), false)
+  assert.equal(isActionableEmail({ from: 'Acme <noreply@acme.com>' }), false)
+  assert.equal(isActionableEmail({ from: 'notifications@github.com' }), false)
+  assert.equal(isActionableEmail({ from: 'mailer-daemon@mail.com' }), false)
+  assert.equal(isActionableEmail({ from: 'Priya Rao <priya@company.com>' }), true)
+})
+
+test('buildEmailTasks filters newsletters and no-reply, keeps real replies', () => {
+  const raw = { messages: [
+    { threadId: 'r1', subject: 'Re: contract', from: 'Sarah <sarah@x.com>' },
+    { threadId: 'n1', subject: 'Your weekly digest', from: 'Digest <digest@brand.com>', listUnsubscribe: '<mailto:u@brand.com>' },
+    { threadId: 'a1', subject: 'Build passed', from: 'notifications@github.com' },
+    { threadId: 'r2', subject: 'Quick question', from: 'Priya <priya@company.com>' },
+  ] }
+  const tasks = buildEmailTasks(raw)
+  assert.equal(tasks.length, 2)
+  assert.deepEqual(tasks.map((t) => t.id), ['mail:r1', 'mail:r2'])
+})
+
 // ---- templateBrief: deterministic, no AI ----
-test('templateBrief builds 3 stats: meetings / to do / flagged', () => {
-  const events = [{ id: '1' }, { id: '2' }, { id: '3' }]
+test('templateBrief builds 3 stats: meetings / to do / flagged (meetings by kind)', () => {
+  const events = [{ id: '1', kind: 'meeting' }, { id: '2', kind: 'meeting' }, { id: '3', kind: 'reminder' }]
   const emailTasks = [{ id: 'a', urgent: true }, { id: 'b' }]
   const brief = templateBrief(events, emailTasks)
   assert.deepEqual(brief.stats, [
-    { n: '3', label: 'meetings' },
+    { n: '2', label: 'meetings' }, // the reminder is not a meeting
     { n: '2', label: 'to do' },
     { n: '1', label: 'flagged' },
   ])

@@ -48,16 +48,20 @@ test('fetchActionableUnread lists then fetches METADATA only (never full body)',
   const { fn, calls } = fakeFetch([
     { match: '/messages?', json: { messages: [{ id: 'm1', threadId: 't1' }, { id: 'm2', threadId: 't2' }] } },
     { match: '/messages/m1', json: { threadId: 't1', payload: { headers: [{ name: 'Subject', value: 'Contract' }, { name: 'From', value: 'Sarah <s@x.com>' }] } } },
-    { match: '/messages/m2', json: { threadId: 't2', payload: { headers: [{ name: 'Subject', value: 'Q3' }, { name: 'From', value: 'p@x.com' }] } } },
+    { match: '/messages/m2', json: { threadId: 't2', payload: { headers: [{ name: 'Subject', value: 'Q3' }, { name: 'From', value: 'p@x.com' }, { name: 'List-Unsubscribe', value: '<mailto:u@x.com>' }] } } },
   ])
   const out = await fetchActionableUnread('AT', fn)
   assert.equal(out.messages.length, 2)
-  assert.deepEqual(out.messages[0], { threadId: 't1', subject: 'Contract', from: 'Sarah <s@x.com>' })
+  assert.deepEqual(out.messages[0], { threadId: 't1', subject: 'Contract', from: 'Sarah <s@x.com>', listUnsubscribe: '' })
+  // the List-Unsubscribe header is captured so the noise filter can use it
+  assert.equal(out.messages[1].listUnsubscribe, '<mailto:u@x.com>')
   // privacy: every per-message fetch must request format=metadata, never full
   for (const c of calls.filter((c) => c.url.includes('/messages/'))) {
     assert.match(c.url, /format=metadata/)
     assert.ok(!c.url.includes('format=full'))
   }
+  // metadata request asks for the List-Unsubscribe header
+  assert.match(calls[1].url, /metadataHeaders=List-Unsubscribe/)
   // list query carries the actionable filter
   assert.match(calls[0].url, /is%3Aunread/)
 })
