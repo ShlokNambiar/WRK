@@ -76,9 +76,11 @@ function realProfile(user) {
     avatarUrl: user?.user_metadata?.avatar_url || null,
   }
 }
-// Demo sample content, but wearing the signed-in user's real profile.
-function signedInDemo(now, user) {
-  return { ...getDemoPayload(now), profile: realProfile(user) }
+// Signed in, but the backend hasn't built this user's feed yet. Show THEIR
+// identity with an empty day — never the demo person's fabricated schedule,
+// which would look real once it sits under the user's own name.
+function pendingPayload(now, user) {
+  return { generatedAt: now.toISOString(), profile: realProfile(user), brief: null, days: {}, emailTasks: [] }
 }
 
 export async function getFeed(now = new Date()) {
@@ -107,12 +109,12 @@ export async function getFeed(now = new Date()) {
     const needsReauth = !!row?.needs_reauth
     const data = row?.payload || null
 
-    // No feed built yet (or malformed) → cache, else demo (with the real
-    // profile). Still surface reauth.
+    // No feed built yet (or malformed) → cache, else a "preparing" empty state
+    // with the real profile. Still surface reauth.
     if (!data || !data.days) {
       const cached = readCache()
       if (cached) return { payload: cached, meta: { ...base, stale: true, needsReauth } }
-      return { payload: signedInDemo(now, user), meta: { ...base, demo: true, needsReauth } }
+      return { payload: pendingPayload(now, user), meta: { ...base, pending: true, needsReauth } }
     }
 
     writeCache(data)
@@ -120,6 +122,6 @@ export async function getFeed(now = new Date()) {
   } catch {
     const cached = readCache()
     if (cached) return { payload: cached, meta: { ...base, stale: true, error: true } }
-    return { payload: signedInDemo(now, user), meta: { ...base, demo: true, error: true } }
+    return { payload: pendingPayload(now, user), meta: { ...base, pending: true, error: true } }
   }
 }

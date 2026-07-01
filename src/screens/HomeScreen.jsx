@@ -11,6 +11,7 @@ import { C, FONT_SERIF, FONT_SANS, SPRING } from '../theme.js'
 export default function HomeScreen({ day, mobile, reduced, onAddTask, goToAccount }) {
   const { greeting, brief, timeline, tasks, nowLabel, toggleTask, profile, feedMeta, loading, isPro } = day
   const demo = feedMeta?.demo
+  const pending = feedMeta?.pending // signed in, first feed not built yet
   const headerTop = mobile ? 'calc(14px + env(safe-area-inset-top))' : '54px'
   const nowIndex = timeline.findIndex((e) => !e.isPast)
   const openTasks = tasks.filter((t) => !t.done).slice(0, 4)
@@ -30,13 +31,14 @@ export default function HomeScreen({ day, mobile, reduced, onAddTask, goToAccoun
         <div style={{ fontFamily: FONT_SERIF, fontWeight: 600, fontSize: 23, color: C.ink, letterSpacing: '.06em' }}>WRK</div>
         <div style={s('position:relative;width:36px;height:36px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 10px rgba(0,0,0,.07)')}>
           <div style={{ width: 15, height: 16, border: '2px solid #4a4a44', borderRadius: '5px 5px 7px 7px' }} />
-          <span style={s('position:absolute;top:7px;right:8px;width:8px;height:8px;border-radius:50%;background:#ff3b30;box-shadow:0 0 0 1.5px #fff')} />
+          {/* no unread dot until notifications actually have a destination — a
+              permanent fake badge reads as a broken/ignored notification. */}
         </div>
       </header>
 
       {/* scroller */}
       <main className="wrk-scroll" style={scroller(mobile)}>
-        {/* demo-data banner (until a feed is configured) */}
+        {/* demo-data banner (logged out / no feed configured) */}
         {demo && (
           <Pressable onPress={goToAccount} scale={0.99}
             style={s('display:flex;align-items:center;gap:10px;margin:0 22px;padding:10px 13px;border-radius:14px;background:#eceaf9;border:1px solid #ddd9f7;width:calc(100% - 44px)')}>
@@ -44,6 +46,13 @@ export default function HomeScreen({ day, mobile, reduced, onAddTask, goToAccoun
             <span style={{ flex: 1, fontSize: 12.5, color: '#3a3a44', textAlign: 'left' }}>Showing <b style={{ fontWeight: 600 }}>sample data</b> — set up your feed to see your day</span>
             <span style={{ fontSize: 12, fontWeight: 700, color: C.blue }}>Set up ›</span>
           </Pressable>
+        )}
+        {/* signed in, first feed still building */}
+        {pending && (
+          <div style={s('display:flex;align-items:center;gap:10px;margin:0 22px;padding:10px 13px;border-radius:14px;background:#eceaf9;border:1px solid #ddd9f7;width:calc(100% - 44px)')}>
+            <span style={{ fontSize: 14, color: C.blue }}>✦</span>
+            <span style={{ flex: 1, fontSize: 12.5, color: '#3a3a44', textAlign: 'left' }}>Your first brief is being prepared — check back after your next morning brief</span>
+          </div>
         )}
 
         {/* greeting */}
@@ -82,7 +91,7 @@ export default function HomeScreen({ day, mobile, reduced, onAddTask, goToAccoun
                 <TimelineEvent ev={ev} isLast={i === timeline.length - 1} reduced={reduced} />
               </Fragment>
             ))}
-            {timeline.length === 0 && !loading && <Empty text="Nothing on your calendar today." />}
+            {timeline.length === 0 && !loading && <Empty text={pending ? 'Your schedule appears here after your first brief.' : 'Nothing on your calendar today.'} />}
           </div>
         </section>
 
@@ -93,7 +102,7 @@ export default function HomeScreen({ day, mobile, reduced, onAddTask, goToAccoun
             <span style={{ fontSize: 12.5, color: C.faint, fontFamily: FONT_SANS }}>{tasks.filter((t) => !t.done).length} open</span>
           </div>
           <p style={{ fontSize: 12.5, color: C.muted, margin: '6px 0 0' }}>
-            <span style={{ color: C.blue }}>✦</span>{demo ? ' Sample tasks — set up your feed' : isPro ? ' Auto-drafted from your inbox & calendar' : ' Auto-drafted from your calendar'}
+            <span style={{ color: C.blue }}>✦</span>{demo ? ' Sample tasks — set up your feed' : pending ? ' Your tasks appear here after your first brief' : isPro ? ' Auto-drafted from your inbox & calendar' : ' Auto-drafted from your calendar'}
           </p>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 11, marginTop: 14 }}>

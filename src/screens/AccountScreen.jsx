@@ -49,7 +49,23 @@ export default function AccountScreen({ day, mobile, reduced }) {
     signedIn, user, isPro, signOut, upgradeToPro,
   } = day
   const [upgradeNote, setUpgradeNote] = useState('')
+  const [signingIn, setSigningIn] = useState(false)
+  const [signInErr, setSignInErr] = useState('')
   const headerTop = mobile ? 'calc(14px + env(safe-area-inset-top))' : '54px'
+
+  // Sign-in / reconnect with real feedback: on success the page redirects (so
+  // we leave the spinner on); on error/cancel we surface a message and re-enable.
+  const handleSignIn = async () => {
+    if (signingIn) return
+    setSigningIn(true)
+    setSignInErr('')
+    try {
+      const { error } = (await signInWithGoogle()) || {}
+      if (error) { setSignInErr("Couldn't start Google sign-in. Try again."); setSigningIn(false) }
+    } catch {
+      setSignInErr("Couldn't start Google sign-in. Try again."); setSigningIn(false)
+    }
+  }
 
   // Prefer the feed profile; fall back to the auth user (e.g. before first feed build).
   const name = profile.name || user?.user_metadata?.full_name || user?.user_metadata?.name || 'Your name'
@@ -57,11 +73,20 @@ export default function AccountScreen({ day, mobile, reduced }) {
   const avatarUrl = profile.avatarUrl || user?.user_metadata?.avatar_url || null
   const needsReauth = !!feedMeta.needsReauth
 
-  const status = feedMeta.demo
-    ? { text: 'Demo data', color: C.muted }
-    : feedMeta.stale
-      ? { text: 'Offline — last saved', color: '#b06d0a' }
-      : { text: 'Live', color: C.green }
+  const status = feedMeta.pending
+    ? { text: 'Preparing your feed', color: '#b06d0a' }
+    : feedMeta.demo
+      ? { text: 'Demo data', color: C.muted }
+      : feedMeta.stale
+        ? { text: 'Offline — last saved', color: '#b06d0a' }
+        : { text: 'Live', color: C.green }
+  // Don't claim "Updated just now" when there's no real feed yet (the demo/pending
+  // payload is stamped `now`, which would read as a successful refresh).
+  const updatedSub = feedMeta.pending
+    ? 'Waiting for your first brief'
+    : feedMeta.demo
+      ? 'Not connected yet'
+      : 'Updated ' + relativeTime(generatedAt)
 
   return (
     <>
@@ -94,11 +119,11 @@ export default function AccountScreen({ day, mobile, reduced }) {
 
             {/* reconnect prompt */}
             {needsReauth && (
-              <Pressable onPress={() => signInWithGoogle()} scale={0.99}
+              <Pressable onPress={handleSignIn} scale={0.99}
                 style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 18px', padding: '12px 14px', borderRadius: 14, background: '#fdeee0', border: '1px solid #f3d9be', width: '100%', textAlign: 'left' }}>
                 <span style={{ fontSize: 14 }}>⚠</span>
                 <span style={{ flex: 1, fontSize: 12.5, color: '#7a4d12' }}>Google access expired — reconnect to keep your feed updating</span>
-                <span style={{ fontSize: 12, fontWeight: 700, color: '#b06d0a' }}>Reconnect ›</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#b06d0a' }}>{signingIn ? 'Connecting…' : 'Reconnect ›'}</span>
               </Pressable>
             )}
 
@@ -107,7 +132,7 @@ export default function AccountScreen({ day, mobile, reduced }) {
             <Card>
               <Row
                 title={<span style={{ color: status.color }}>{status.text}</span>}
-                sub={'Updated ' + relativeTime(generatedAt)}
+                sub={updatedSub}
                 action={<StatusDot color={status.color} />}
                 border
               />
@@ -153,8 +178,8 @@ export default function AccountScreen({ day, mobile, reduced }) {
                     onChange={(e) => e.target.value && setSetting('briefTime', to12h(e.target.value))}
                     style={{
                       fontFamily: FONT_SANS, fontSize: 13, fontWeight: 600, color: C.blue,
-                      background: '#eceaf9', border: 'none', borderRadius: 11, padding: '5px 11px',
-                      outline: 'none', appearance: 'none', WebkitAppearance: 'none',
+                      background: '#eceaf9', border: 'none', borderRadius: 11, padding: '0 12px',
+                      minHeight: 44, outline: 'none', appearance: 'none', WebkitAppearance: 'none',
                     }} />
                 }
                 border />
@@ -179,11 +204,12 @@ export default function AccountScreen({ day, mobile, reduced }) {
               </div>
             </div>
 
-            <Pressable onPress={() => signInWithGoogle()} scale={0.98}
-              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 11, width: '100%', background: C.card, borderRadius: 16, padding: '15px', fontSize: 15, fontWeight: 600, color: C.ink, boxShadow: '0 6px 20px rgba(0,0,0,.06)' }}>
+            <Pressable onPress={handleSignIn} scale={0.98} disabled={signingIn}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 11, width: '100%', background: C.card, borderRadius: 16, padding: '15px', fontSize: 15, fontWeight: 600, color: C.ink, boxShadow: '0 6px 20px rgba(0,0,0,.06)', opacity: signingIn ? 0.6 : 1 }}>
               <GoogleMark />
-              <span>Continue with Google</span>
+              <span>{signingIn ? 'Connecting…' : 'Continue with Google'}</span>
             </Pressable>
+            {signInErr && <p style={{ fontSize: 12.5, color: C.red, margin: '10px 6px 0' }}>{signInErr}</p>}
 
             <p style={{ fontSize: 12, lineHeight: 1.5, color: C.muted, margin: '16px 6px 0' }}>
               During the beta you may see a “Google hasn’t verified this app” screen — tap <b style={{ fontWeight: 600, color: C.inkSoft }}>Advanced → Continue</b>. That’s expected.

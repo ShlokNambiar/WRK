@@ -9,7 +9,7 @@ import { getSession, onAuthChange, signOut } from '../lib/supabase.js'
 import { syncProviderToken } from '../lib/syncToken.js'
 import { getTier } from '../providers/entitlement.js'
 import { initBilling, purchasePro } from '../lib/billing.js'
-import { initNotifications, scheduleDailyBrief, scheduleTaskReminder } from '../lib/notifications.js'
+import { initNotifications, scheduleDailyBrief, scheduleTaskReminder, cancelTaskReminder } from '../lib/notifications.js'
 import {
   buildTimeline, deriveAutoTasks, buildBrief, buildGreeting, mergeTasks, groupTasks, fmtTime,
 } from '../lib/derive.js'
@@ -130,7 +130,11 @@ export function useDayModel() {
   useEffect(() => {
     if (!hydrated) return
     const ids = new Set(tasks.map((t) => t.id))
-    const keep = ([k]) => ids.has(k) || k.startsWith('auto:') || k.startsWith('mail:')
+    const WINDOW = 30 * 864e5 // keep off-day auto/email done-state ~30 days, then let it expire
+    const keep = ([k, v]) =>
+      ids.has(k) ||
+      ((k.startsWith('auto:') || k.startsWith('mail:')) &&
+        Date.now() - (typeof v === 'number' ? v : Date.now()) < WINDOW)
     const prunedDone = Object.fromEntries(Object.entries(doneById).filter(keep))
     saveState({ v: 3, manualTasks, doneById: prunedDone, settings })
   }, [hydrated, manualTasks, doneById, settings, tasks])
@@ -138,7 +142,9 @@ export function useDayModel() {
   // ---- task actions ----
   const toggleTask = useCallback((id) => setDoneById((d) => {
     const next = { ...d }
-    if (next[id]) delete next[id]; else next[id] = true
+    // store the completion time (not just `true`) so off-day auto/email done
+    // entries can be aged out during persist instead of accumulating forever.
+    if (next[id]) delete next[id]; else next[id] = Date.now()
     return next
   }), [])
 
@@ -158,9 +164,13 @@ export function useDayModel() {
 
   const editTask = useCallback((id, patch) => {
     setManualTasks((ts) => ts.map((t) => (t.id === id ? { ...t, ...patch } : t)))
-    // reminders set/changed during an edit must actually (re)schedule — the
-    // edit sheet passes remindAt in the patch.
-    if (patch.remindAt) scheduleTaskReminder({ id, title: patch.title, remindAt: patch.remindAt })
+    // Only touch the reminder when the edit actually carries a remindAt key
+    // (the sheet omits it when the user didn't change the reminder chip).
+    // remindAt set → (re)schedule; explicit null → cancel any stale notification.
+    if ('remindAt' in patch) {
+      if (patch.remindAt) scheduleTaskReminder({ id, title: patch.title, remindAt: patch.remindAt })
+      else cancelTaskReminder(id)
+    }
   }, [])
 
   const deleteTask = useCallback((id) => {
@@ -171,8 +181,12 @@ export function useDayModel() {
   // newOrderIds: manual-task ids in their new order
   const reorderTasks = useCallback((newOrderIds) => {
     setManualTasks((ts) => {
-      const rank = new Map(newOrderIds.map((id, i) => [id, i]))
-      return ts.map((t) => (rank.has(t.id) ? { ...t, order: rank.get(t.id) } : t))
+      // Reassign only the order-slots the dragged subset already occupies, so a
+      // reorder within one bucket can't collide with another bucket's 0,1,2…
+      const idset = new Set(newOrderIds)
+      const slots = ts.filter((t) => idset.has(t.id)).map((t) => t.order ?? 0).sort((a, b) => a - b)
+      const rank = new Map(newOrderIds.map((id, i) => [id, slots[i]]))
+      return ts.map((t) => (idset.has(t.id) ? { ...t, order: rank.get(t.id) } : t))
     })
   }, [])
 

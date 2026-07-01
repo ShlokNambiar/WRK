@@ -218,9 +218,12 @@ export function mergeTasks(autoTasks, manualTasks, doneById) {
     .map((t, i) => ({ t, i }))
     .sort((a, b) => {
       if (!!a.t.done !== !!b.t.done) return a.t.done ? 1 : -1
-      if (!a.t.done && !!a.t.urgent !== !!b.t.urgent) return a.t.urgent ? -1 : 1
-      // explicit manual order wins as a tiebreaker, else stable insertion order
-      if (a.t.order != null && b.t.order != null) return a.t.order - b.t.order
+      if (!a.t.done) {
+        // explicit manual order wins over urgency, so a dragged Normal task can
+        // sit above an urgent one without snapping back next render.
+        if (a.t.order != null && b.t.order != null) return a.t.order - b.t.order
+        if (!!a.t.urgent !== !!b.t.urgent) return a.t.urgent ? -1 : 1
+      }
       return a.i - b.i
     })
     .map(({ t }) => t)

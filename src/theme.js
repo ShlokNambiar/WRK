@@ -1,9 +1,11 @@
 // Shared design tokens (pulled from the original HQ design — reused for WRK)
 export const C = {
   ink: '#1a1a1a',
-  inkSoft: '#6a6a62',
-  muted: '#7c7b72',
-  faint: '#8a897f',
+  // muted/faint darkened to pass WCAG AA (4.5:1) on the light paper for small
+  // text; inkSoft nudged down to keep three visibly distinct steps.
+  inkSoft: '#5f5f57',
+  muted: '#6f6e63',
+  faint: '#717066',
   line: '#e4e3dc',
   paper: '#f7f7f4',
   paper2: '#f0efe9',

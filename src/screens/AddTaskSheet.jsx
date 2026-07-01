@@ -15,6 +15,10 @@ export default function AddTaskSheet({ day, editing = null, onClose }) {
   const [due, setDue] = useState(initDue)
   const [high, setHigh] = useState(editing ? !!editing.urgent : false)
   const [remind, setRemind] = useState('Off')
+  // Track whether the user actually touched the reminder chip, so editing an
+  // untouched task leaves its existing reminder alone (the chip can't yet show
+  // an existing reminder, so a blind save must not wipe/rebuild it).
+  const [remindTouched, setRemindTouched] = useState(false)
 
   // naive "AI" link: match the typed title against today's events
   const linked = useMemo(() => {
@@ -36,9 +40,12 @@ export default function AddTaskSheet({ day, editing = null, onClose }) {
       remindAt = d.toISOString()
     }
     if (editing) {
-      // pass `note` as-is (empty allowed, so a note can be cleared) and remindAt
-      // so editing a task can set/change its reminder — editTask reschedules.
-      day.editTask(editing.id, { title: t, meta: note, urgent: high, bucket, due: dueVal, remindAt })
+      // `note` as-is (empty allowed, so a note can be cleared). Only include
+      // remindAt when the user changed the reminder chip, so editTask leaves an
+      // untouched reminder in place instead of cancelling it.
+      const patch = { title: t, meta: note, urgent: high, bucket, due: dueVal }
+      if (remindTouched) patch.remindAt = remindAt
+      day.editTask(editing.id, patch)
     } else {
       day.addTask(t, { due: dueVal, urgent: high, bucket, note, remindAt })
     }
@@ -93,7 +100,7 @@ export default function AddTaskSheet({ day, editing = null, onClose }) {
         </OptionRow>
         <OptionRow icon={<ClockIcon />} label="Remind me">
           {['Off', 'In 1h', 'This evening'].map((r) => (
-            <Chip key={r} on={remind === r} onPress={() => setRemind(r)}>{r}</Chip>
+            <Chip key={r} on={remind === r} onPress={() => { setRemind(r); setRemindTouched(true) }}>{r}</Chip>
           ))}
         </OptionRow>
       </div>
