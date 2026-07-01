@@ -2,12 +2,27 @@
 // right after sign-in. We resolve the user from their Supabase JWT, then
 // hand the token to the service-role-only store_google_token RPC (Vault).
 // The token is never stored anywhere on the client.
+//
+// This is the one function called from a browser / Capacitor webview, so it
+// must answer the CORS preflight (OPTIONS) and echo CORS headers on every
+// response — otherwise the browser blocks the POST before it's ever sent.
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
 const json = (body: unknown, status: number) =>
-  new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { ...CORS, "Content-Type": "application/json" },
+  });
 
 Deno.serve(async (req) => {
+  // CORS preflight — must return 2xx with the CORS headers, no body.
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
   if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
 
   const authHeader = req.headers.get("Authorization");
@@ -51,5 +66,5 @@ Deno.serve(async (req) => {
     await admin.from("profiles").update({ tz }).eq("id", user.id);
   }
 
-  return new Response(null, { status: 204 });
+  return new Response(null, { status: 204, headers: CORS });
 });
