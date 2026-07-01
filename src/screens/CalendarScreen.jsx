@@ -4,6 +4,7 @@ import NowMarker from '../components/NowMarker.jsx'
 import Pressable from '../components/Pressable.jsx'
 import { Empty } from './HomeScreen.jsx'
 import { isoDate } from '../providers/feed.js'
+import { useMeasuredHeight } from '../hooks/useMeasuredHeight.js'
 import { C, FONT_SERIF, FONT_SANS } from '../theme.js'
 
 const LETTERS = ['M', 'T', 'W', 'T', 'F', 'S', 'S']
@@ -11,6 +12,7 @@ const LETTERS = ['M', 'T', 'W', 'T', 'F', 'S', 'S']
 export default function CalendarScreen({ day, mobile, reduced, onAddTask }) {
   const { timeline, nowLabel, now, loading, selectedDate, setSelectedDate, datesWithEvents } = day
   const headerTop = mobile ? 'calc(14px + env(safe-area-inset-top))' : '54px'
+  const [headerRef, headerH] = useMeasuredHeight()
 
   const todayKey = isoDate(now)
   const dow = (now.getDay() + 6) % 7
@@ -26,7 +28,7 @@ export default function CalendarScreen({ day, mobile, reduced, onAddTask }) {
 
   return (
     <>
-      <header style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20, background: C.paper, padding: `${headerTop} 22px 0` }}>
+      <header ref={headerRef} style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20, background: C.paper, padding: `${headerTop} 22px 0` }}>
         <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between' }}>
           <div>
             <div style={{ fontSize: 12.5, letterSpacing: '.1em', textTransform: 'uppercase', color: C.muted, fontWeight: 600 }}>{monthLabel}</div>
@@ -63,7 +65,7 @@ export default function CalendarScreen({ day, mobile, reduced, onAddTask }) {
 
       <main className="wrk-scroll" style={{
         position: 'absolute', left: 0, right: 0, bottom: 0,
-        top: mobile ? 'calc(168px + env(safe-area-inset-top))' : 172,
+        top: headerH || (mobile ? 'calc(168px + env(safe-area-inset-top))' : 172),
         overflowY: 'auto', padding: '12px 22px 0',
       }}>
         {timeline.length === 0 && !loading && <Empty text={showNow ? 'No events today.' : 'No events this day.'} />}

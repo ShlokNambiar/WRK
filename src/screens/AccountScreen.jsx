@@ -4,6 +4,7 @@ import Toggle from '../components/Toggle.jsx'
 import Avatar from '../components/Avatar.jsx'
 import { C, FONT_SERIF, FONT_SANS } from '../theme.js'
 import { signInWithGoogle } from '../lib/supabase.js'
+import { useMeasuredHeight } from '../hooks/useMeasuredHeight.js'
 
 function relativeTime(iso) {
   if (!iso) return 'never'
@@ -52,6 +53,7 @@ export default function AccountScreen({ day, mobile, reduced }) {
   const [signingIn, setSigningIn] = useState(false)
   const [signInErr, setSignInErr] = useState('')
   const headerTop = mobile ? 'calc(14px + env(safe-area-inset-top))' : '54px'
+  const [headerRef, headerH] = useMeasuredHeight()
 
   // Sign-in / reconnect with real feedback: on success the page redirects (so
   // we leave the spinner on); on error/cancel we surface a message and re-enable.
@@ -90,7 +92,7 @@ export default function AccountScreen({ day, mobile, reduced }) {
 
   return (
     <>
-      <header style={{
+      <header ref={headerRef} style={{
         position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20, padding: `${headerTop} 22px 10px`,
         background: 'linear-gradient(180deg,rgba(247,247,244,.96),rgba(247,247,244,0))',
       }}>
@@ -98,8 +100,9 @@ export default function AccountScreen({ day, mobile, reduced }) {
       </header>
 
       <main className="wrk-scroll" style={{
-        position: 'absolute', inset: 0, overflowY: 'auto',
-        padding: mobile ? 'calc(96px + env(safe-area-inset-top)) 18px 0' : '104px 18px 0',
+        position: 'absolute', left: 0, right: 0, bottom: 0,
+        top: headerH || (mobile ? 'calc(96px + env(safe-area-inset-top))' : 104),
+        overflowY: 'auto', padding: '0 18px 0',
       }}>
         {signedIn ? (
           <>
@@ -148,8 +151,10 @@ export default function AccountScreen({ day, mobile, reduced }) {
               <Row title="Plan" sub={isPro ? 'Pro — full brief + email tasks' : 'Free — calendar + tasks'}
                 action={<TierBadge pro={isPro} />} border />
               {isPro ? (
-                <Pressable onPress={() => {}} style={{ display: 'block', width: '100%', textAlign: 'left' }}>
-                  <Row title="Manage subscription" sub="Billing & plan" action={<Chevron />} />
+                <Pressable
+                  onPress={() => { try { window.open('https://play.google.com/store/account/subscriptions', '_blank', 'noopener') } catch {} }}
+                  style={{ display: 'block', width: '100%', textAlign: 'left' }}>
+                  <Row title="Manage subscription" sub="Billing & plan · opens Google Play" action={<Chevron />} />
                 </Pressable>
               ) : (
                 <Pressable

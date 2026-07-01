@@ -6,12 +6,14 @@ import TaskRow from '../components/TaskRow.jsx'
 import TimelineEvent from '../components/TimelineEvent.jsx'
 import NowMarker from '../components/NowMarker.jsx'
 import { s } from '../style.js'
+import { useMeasuredHeight } from '../hooks/useMeasuredHeight.js'
 import { C, FONT_SERIF, FONT_SANS, SPRING } from '../theme.js'
 
 export default function HomeScreen({ day, mobile, reduced, onAddTask, goToAccount }) {
   const { greeting, brief, timeline, tasks, nowLabel, toggleTask, profile, feedMeta, loading, isPro } = day
   const demo = feedMeta?.demo
   const pending = feedMeta?.pending // signed in, first feed not built yet
+  const [headerRef, headerH] = useMeasuredHeight()
   const headerTop = mobile ? 'calc(14px + env(safe-area-inset-top))' : '54px'
   const nowIndex = timeline.findIndex((e) => !e.isPast)
   const openTasks = tasks.filter((t) => !t.done).slice(0, 4)
@@ -19,7 +21,7 @@ export default function HomeScreen({ day, mobile, reduced, onAddTask, goToAccoun
   return (
     <>
       {/* header */}
-      <header style={{
+      <header ref={headerRef} style={{
         position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20,
         padding: `${headerTop} 22px 12px`, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         background: 'linear-gradient(180deg,rgba(247,247,244,.95),rgba(247,247,244,0))',
@@ -37,7 +39,7 @@ export default function HomeScreen({ day, mobile, reduced, onAddTask, goToAccoun
       </header>
 
       {/* scroller */}
-      <main className="wrk-scroll" style={scroller(mobile)}>
+      <main className="wrk-scroll" style={{ ...scroller(mobile), top: headerH || scroller(mobile).top }}>
         {/* demo-data banner (logged out / no feed configured) */}
         {demo && (
           <Pressable onPress={goToAccount} scale={0.99}

@@ -3,12 +3,14 @@ import { Reorder } from 'framer-motion'
 import TaskRow from '../components/TaskRow.jsx'
 import Pressable from '../components/Pressable.jsx'
 import { Empty } from './HomeScreen.jsx'
+import { useMeasuredHeight } from '../hooks/useMeasuredHeight.js'
 import { C, FONT_SERIF, FONT_SANS } from '../theme.js'
 
 export default function TasksScreen({ day, mobile, reduced, openEdit }) {
   const { grouped, toggleTask } = day
   const [filter, setFilter] = useState('open')
   const headerTop = mobile ? 'calc(14px + env(safe-area-inset-top))' : '54px'
+  const [headerRef, headerH] = useMeasuredHeight()
 
   const openCount = grouped.overdue.length + grouped.today.length + grouped.week.length
   const chips = [
@@ -27,7 +29,7 @@ export default function TasksScreen({ day, mobile, reduced, openEdit }) {
 
   return (
     <>
-      <header style={{
+      <header ref={headerRef} style={{
         position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20, padding: `${headerTop} 22px 12px`,
         background: 'linear-gradient(180deg,rgba(247,247,244,.96),rgba(247,247,244,0))',
         backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
@@ -50,7 +52,7 @@ export default function TasksScreen({ day, mobile, reduced, openEdit }) {
 
       <main className="wrk-scroll" style={{
         position: 'absolute', left: 0, right: 0, bottom: 0,
-        top: mobile ? 'calc(164px + env(safe-area-inset-top))' : 168,
+        top: headerH || (mobile ? 'calc(164px + env(safe-area-inset-top))' : 168),
         overflowY: 'auto', padding: '6px 22px 0',
       }}>
         {total === 0 && <Empty text="No tasks here. Enjoy the calm." />}
