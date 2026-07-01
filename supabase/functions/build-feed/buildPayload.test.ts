@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildEvents, buildEmailTasks, templateBrief, assemblePayload, computeStats, isActionableEmail } from './buildPayload.ts'
+import { buildEvents, buildEmailTasks, templateBrief, assemblePayload, computeStats } from './buildPayload.ts'
 
 // ---- buildEvents: Google Calendar events.list -> FeedEvent[] ----
 test('buildEvents maps a timed event with all fields', () => {
@@ -133,35 +133,9 @@ test('buildEmailTasks maps subject+sender, never the body/snippet', () => {
   assert.ok(!blob.includes('ANOTHER_SECRET'))
 })
 
-test('buildEmailTasks caps at 6 (after filtering)', () => {
+test('buildEmailTasks is a pure mapper and caps at 6 (filtering happens upstream)', () => {
   const many = { messages: Array.from({ length: 12 }, (_, i) => ({ threadId: 't' + i, subject: 's' + i, from: 'a@b.com' })) }
   assert.equal(buildEmailTasks(many).length, 6)
-})
-
-// ---- isActionableEmail: the default noise filter ----
-test('isActionableEmail drops bulk mail carrying a List-Unsubscribe header', () => {
-  assert.equal(isActionableEmail({ from: 'News <news@brand.com>', listUnsubscribe: '<https://brand.com/u>' }), false)
-  assert.equal(isActionableEmail({ from: 'Sarah <sarah@x.com>', listUnsubscribe: '' }), true)
-})
-
-test('isActionableEmail drops no-reply / automated senders', () => {
-  assert.equal(isActionableEmail({ from: 'no-reply@service.com' }), false)
-  assert.equal(isActionableEmail({ from: 'Acme <noreply@acme.com>' }), false)
-  assert.equal(isActionableEmail({ from: 'notifications@github.com' }), false)
-  assert.equal(isActionableEmail({ from: 'mailer-daemon@mail.com' }), false)
-  assert.equal(isActionableEmail({ from: 'Priya Rao <priya@company.com>' }), true)
-})
-
-test('buildEmailTasks filters newsletters and no-reply, keeps real replies', () => {
-  const raw = { messages: [
-    { threadId: 'r1', subject: 'Re: contract', from: 'Sarah <sarah@x.com>' },
-    { threadId: 'n1', subject: 'Your weekly digest', from: 'Digest <digest@brand.com>', listUnsubscribe: '<mailto:u@brand.com>' },
-    { threadId: 'a1', subject: 'Build passed', from: 'notifications@github.com' },
-    { threadId: 'r2', subject: 'Quick question', from: 'Priya <priya@company.com>' },
-  ] }
-  const tasks = buildEmailTasks(raw)
-  assert.equal(tasks.length, 2)
-  assert.deepEqual(tasks.map((t) => t.id), ['mail:r1', 'mail:r2'])
 })
 
 // ---- templateBrief: deterministic, no AI ----

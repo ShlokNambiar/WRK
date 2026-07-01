@@ -12,6 +12,8 @@ import { buildEvents, buildEmailTasks, templateBrief, assemblePayload, computeSt
 import { mintAccessToken, fetchTodayEvents, fetchActionableUnread, TokenRevokedError } from "./google.ts";
 import { claudeBrief } from "./claudeBrief.ts";
 import { geminiBrief } from "./geminiBrief.ts";
+import { partitionCandidates } from "./emailFilter.ts";
+import { classifyActionable } from "./actionability.ts";
 
 const json = (body: unknown, status: number) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -35,7 +37,21 @@ function aiBrief(events: FeedEvent[], emailTasks: EmailTask[]): Promise<Brief> {
   return Promise.reject(new Error("no AI provider key configured"));
 }
 
+const AI_KEYS = { anthropic: ANTHROPIC_API_KEY || undefined, gemini: GEMINI_API_KEY || undefined };
+
 type UserRow = { user_id: string; tier: string; tz: string; name: string; email: string };
+
+// The user's per-sender curation lists (mute = never, allow = always).
+async function loadEmailRules(userId: string): Promise<{ muteSet: Set<string>; allowSet: Set<string> }> {
+  const { data } = await admin.from("email_rules").select("sender, mode").eq("user_id", userId);
+  const muteSet = new Set<string>();
+  const allowSet = new Set<string>();
+  for (const r of (data ?? []) as { sender: string; mode: string }[]) {
+    if (r.mode === "mute") muteSet.add(r.sender);
+    else if (r.mode === "allow") allowSet.add(r.sender);
+  }
+  return { muteSet, allowSet };
+}
 
 async function loadUsers(userId?: string): Promise<UserRow[]> {
   // google_tokens marks who has connected Google. profiles/entitlements share a
@@ -80,7 +96,17 @@ async function buildForUser(u: UserRow, now: Date): Promise<{ ok: boolean; reaso
     let brief;
     if (u.tier === "pro") {
       const rawGmail = await fetchActionableUnread(access);
-      emailTasks = buildEmailTasks(rawGmail);
+      // 1. user's mute/allow lists, then obvious-bulk rules, split the rest out
+      const { muteSet, allowSet } = await loadEmailRules(u.user_id);
+      const { allow, undecided } = partitionCandidates(rawGmail.messages, muteSet, allowSet);
+      // 2. AI decides the undecided ones; on any failure keep them (never drop real mail)
+      let aiKept = undecided;
+      try {
+        aiKept = await classifyActionable(undecided, AI_KEYS);
+      } catch (_e) {
+        aiKept = undecided;
+      }
+      emailTasks = buildEmailTasks({ messages: [...allow, ...aiKept] });
       try {
         brief = await aiBrief(events, emailTasks);
       } catch (_e) {

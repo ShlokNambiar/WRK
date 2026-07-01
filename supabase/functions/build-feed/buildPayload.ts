@@ -108,8 +108,9 @@ export function buildEvents(raw: { items?: GCalItem[] } | undefined | null): Fee
     .sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0))
 }
 
-// --- Gmail header metadata -> EmailTask. Receives ONLY subject + from (+ the
-// List-Unsubscribe header, used purely as a bulk-mail signal — never stored). ---
+// --- Gmail header metadata -> EmailTask. Receives ONLY subject + from. Pure
+// mapper: which messages reach here is decided upstream (emailFilter + the AI
+// actionability pass), so this just shapes the already-chosen ones into tasks. ---
 type GmailMsg = { threadId: string; subject?: string; from?: string; listUnsubscribe?: string; unread?: boolean }
 
 // Turn "Sarah Chen <sarah@x.com>" or "sarah@x.com" into a friendly display name.
@@ -120,22 +121,8 @@ function senderName(from: string | undefined): string {
   return from.split('@')[0]
 }
 
-// Senders that never expect a personal reply — automated/transactional mail.
-const AUTOMATED_FROM = /(no-?reply|do-?not-?reply|donotreply|no_reply|notifications?@|mailer-daemon|postmaster@|bounce[sd]?@)/i
-
-// The default noise filter: an unread email becomes a task unless it's clearly
-// bulk (carries a List-Unsubscribe header — newsletters, marketing, digests) or
-// comes from an automated / no-reply sender. This is intentionally conservative
-// so real "needs a reply" mail is never dropped; per-user allow/mute lists come
-// later.
-export function isActionableEmail(m: GmailMsg): boolean {
-  if (m.listUnsubscribe && m.listUnsubscribe.trim()) return false
-  if (m.from && AUTOMATED_FROM.test(m.from)) return false
-  return true
-}
-
 export function buildEmailTasks(raw: { messages?: GmailMsg[] } | undefined | null): EmailTask[] {
-  const messages = (raw?.messages ?? []).filter(isActionableEmail)
+  const messages = raw?.messages ?? []
   return messages.slice(0, 6).map((m) => {
     const subject = (m.subject || '(no subject)').trim()
     return {
