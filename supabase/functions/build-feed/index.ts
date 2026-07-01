@@ -1,16 +1,17 @@
 // build-feed: the daily per-user job. Triggered by pg_cron (batch, no body) or
 // with { "user_id": "..." } for a single user. For each user it mints a Google
 // access token from the stored refresh token, fetches today's calendar (+ Gmail
-// for Pro), builds the brief (Claude for Pro, template for Free), and upserts
-// ONLY the derived feed. Raw email/calendar content is never persisted.
+// for Pro), builds the brief (AI for Pro — see aiBrief; template for Free), and
+// upserts ONLY the derived feed. Raw email/calendar content is never persisted.
 //
 // Auth: this function is internal. verify_jwt is disabled at the platform level;
 // instead we require the caller to present the service-role key as a Bearer
 // token (pg_cron does this). No client can reach it.
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import { buildEvents, buildEmailTasks, templateBrief, assemblePayload } from "./buildPayload.ts";
+import { buildEvents, buildEmailTasks, templateBrief, assemblePayload, type Brief, type FeedEvent, type EmailTask } from "./buildPayload.ts";
 import { mintAccessToken, fetchTodayEvents, fetchActionableUnread, TokenRevokedError } from "./google.ts";
 import { claudeBrief } from "./claudeBrief.ts";
+import { geminiBrief } from "./geminiBrief.ts";
 
 const json = (body: unknown, status: number) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -18,10 +19,21 @@ const json = (body: unknown, status: number) =>
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
+const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY") ?? "";
 const GOOGLE_CLIENT_ID = Deno.env.get("GOOGLE_OAUTH_CLIENT_ID") ?? "";
 const GOOGLE_CLIENT_SECRET = Deno.env.get("GOOGLE_OAUTH_CLIENT_SECRET") ?? "";
 
 const admin = createClient(SUPABASE_URL, SERVICE_KEY);
+
+// Pick the AI provider by which key is configured. Anthropic is preferred when
+// present (higher quality + doesn't train on data); Gemini is the interim
+// option; with neither, this throws and the caller uses the deterministic
+// template brief. Adding ANTHROPIC_API_KEY later auto-upgrades with no redeploy.
+function aiBrief(events: FeedEvent[], emailTasks: EmailTask[]): Promise<Brief> {
+  if (ANTHROPIC_API_KEY) return claudeBrief(events, emailTasks, ANTHROPIC_API_KEY);
+  if (GEMINI_API_KEY) return geminiBrief(events, emailTasks, GEMINI_API_KEY);
+  return Promise.reject(new Error("no AI provider key configured"));
+}
 
 type UserRow = { user_id: string; tier: string; tz: string; name: string; email: string };
 
@@ -70,7 +82,7 @@ async function buildForUser(u: UserRow, now: Date): Promise<{ ok: boolean; reaso
       const rawGmail = await fetchActionableUnread(access);
       emailTasks = buildEmailTasks(rawGmail);
       try {
-        brief = await claudeBrief(events, emailTasks, ANTHROPIC_API_KEY);
+        brief = await aiBrief(events, emailTasks);
       } catch (_e) {
         brief = templateBrief(events, emailTasks); // graceful AI fallback
       }
