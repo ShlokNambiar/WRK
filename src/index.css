@@ -5,6 +5,12 @@ html, body, #root { height: 100%; }
 body {
   margin: 0;
   background: #0a0a0a;
+  /* Sans is the default for all body text; headings opt into the serif
+     (Newsreader) explicitly via FONT_SERIF. Without this, unspecified text
+     falls back to the browser default (Times serif) and looks mismatched. */
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  color: #1a1a1a; /* default ink so a missed `color` degrades to dark text, not a black glyph on a colored tile */
+  -webkit-font-smoothing: antialiased;
   /* prevent the page itself from rubber-banding on mobile; the in-app
      scroller handles scrolling */
   overscroll-behavior: none;

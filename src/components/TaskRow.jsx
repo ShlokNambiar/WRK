@@ -74,7 +74,7 @@ export default function TaskRow({ task, onToggle, onEdit, reduced }) {
 
       <div style={{ flex: 1, minWidth: 0, pointerEvents: 'none' }}>
         <div style={{ position: 'relative', display: 'inline-block', maxWidth: '100%' }}>
-          <span style={{ fontSize: 15, fontWeight: 600, color: d.titleColor, fontFamily: FONT_SANS }}>{task.title}</span>
+          <span style={{ fontSize: 15, fontWeight: 600, color: d.titleColor, fontFamily: FONT_SANS, display: 'block', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{task.title}</span>
           {/* animated strike-through sweep */}
           <motion.span
             aria-hidden="true"

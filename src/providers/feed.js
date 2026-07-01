@@ -67,6 +67,20 @@ export function getDemoPayload(now = new Date()) {
 // When a Supabase user is signed in, read THAT user's own `feeds` row (RLS
 // scopes the query to them). Logged-out / empty / error all fall back to the
 // cache and finally the labeled demo payload, exactly as before.
+// A signed-in user's real identity from the Supabase auth user, so a
+// not-yet-built feed never shows the demo person ("Alex" / demo@wrk.app).
+function realProfile(user) {
+  return {
+    name: user?.user_metadata?.full_name || user?.user_metadata?.name || '',
+    email: user?.email || '',
+    avatarUrl: user?.user_metadata?.avatar_url || null,
+  }
+}
+// Demo sample content, but wearing the signed-in user's real profile.
+function signedInDemo(now, user) {
+  return { ...getDemoPayload(now), profile: realProfile(user) }
+}
+
 export async function getFeed(now = new Date()) {
   const base = { demo: false, stale: false, error: false, needsReauth: false }
 
@@ -93,11 +107,12 @@ export async function getFeed(now = new Date()) {
     const needsReauth = !!row?.needs_reauth
     const data = row?.payload || null
 
-    // No feed built yet (or malformed) → cache, else labeled demo. Still surface reauth.
+    // No feed built yet (or malformed) → cache, else demo (with the real
+    // profile). Still surface reauth.
     if (!data || !data.days) {
       const cached = readCache()
       if (cached) return { payload: cached, meta: { ...base, stale: true, needsReauth } }
-      return { payload: getDemoPayload(now), meta: { ...base, demo: true, needsReauth } }
+      return { payload: signedInDemo(now, user), meta: { ...base, demo: true, needsReauth } }
     }
 
     writeCache(data)
@@ -105,6 +120,6 @@ export async function getFeed(now = new Date()) {
   } catch {
     const cached = readCache()
     if (cached) return { payload: cached, meta: { ...base, stale: true, error: true } }
-    return { payload: getDemoPayload(now), meta: { ...base, demo: true, error: true } }
+    return { payload: signedInDemo(now, user), meta: { ...base, demo: true, error: true } }
   }
 }

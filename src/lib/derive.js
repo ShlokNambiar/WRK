@@ -196,10 +196,12 @@ export function buildTimeline(events, now = new Date()) {
 // ---------- task grouping (All Tasks screen) ----------
 // Buckets: overdue / today / week / done. Providers may set t.bucket; otherwise
 // we infer a sensible default.
+const BUCKETS = new Set(['overdue', 'today', 'week', 'done'])
 export function bucketFor(t) {
   if (t.done) return 'done'
-  if (t.bucket) return t.bucket
-  if (t.urgent) return 'today'
+  // clamp any unknown bucket (a feed emailTask can carry e.g. 'tomorrow') to a
+  // real column — otherwise groupTasks would index an undefined array and throw.
+  if (t.bucket && BUCKETS.has(t.bucket)) return t.bucket
   return 'today'
 }
 export function groupTasks(tasks) {

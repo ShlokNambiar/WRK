@@ -5,7 +5,10 @@ import { C, FONT_SERIF, FONT_SANS } from '../theme.js'
 // Inner content of the Add/Edit-task bottom sheet. Wrapped by <Sheet> in WrkApp.
 export default function AddTaskSheet({ day, editing = null, onClose }) {
   const initNote = editing && editing.meta && !/^(added|from)/i.test(editing.meta) ? editing.meta : ''
-  const initDue = editing ? (editing.bucket === 'week' ? 'This week' : 'Today') : 'Today'
+  const initDue = editing
+    ? (editing.due === 'this week' || editing.bucket === 'week' ? 'This week'
+      : editing.due === 'tomorrow' ? 'Tomorrow' : 'Today')
+    : 'Today'
 
   const [title, setTitle] = useState(editing ? editing.title : '')
   const [note, setNote] = useState(initNote)
@@ -33,7 +36,9 @@ export default function AddTaskSheet({ day, editing = null, onClose }) {
       remindAt = d.toISOString()
     }
     if (editing) {
-      day.editTask(editing.id, { title: t, meta: note || editing.meta, urgent: high, bucket, due: dueVal })
+      // pass `note` as-is (empty allowed, so a note can be cleared) and remindAt
+      // so editing a task can set/change its reminder — editTask reschedules.
+      day.editTask(editing.id, { title: t, meta: note, urgent: high, bucket, due: dueVal, remindAt })
     } else {
       day.addTask(t, { due: dueVal, urgent: high, bucket, note, remindAt })
     }

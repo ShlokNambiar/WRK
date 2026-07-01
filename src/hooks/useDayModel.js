@@ -1,7 +1,7 @@
 // Assembles the whole app from a single JSON feed (produced by a scheduled
 // Claude routine — no Google OAuth in the app). Owns manual tasks, done-state,
 // brief settings, and the selected calendar day. Persisted locally; offline-first.
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { getFeed, normalizeDay, isoDate } from '../providers/feed.js'
 import { loadState, saveState } from '../lib/storage.js'
 import { clearCache } from '../lib/feedConfig.js'
@@ -32,6 +32,7 @@ export function useDayModel() {
   const [doneById, setDoneById] = useState({})
   const [settings, setSettings] = useState(DEFAULT_SETTINGS)
   const [hydrated, setHydrated] = useState(false)
+  const uidRef = useRef(0) // monotonic counter for unique manual-task ids
 
   // hydrate persisted state
   useEffect(() => {
@@ -122,11 +123,15 @@ export function useDayModel() {
     [isToday, feed, events, tasks, now],
   )
 
-  // persist (prune doneById to live ids so it can't grow unbounded)
+  // persist (prune doneById to live ids so it can't grow unbounded). Keep
+  // auto:/mail: done-state even when it's not in the current `tasks` — on a
+  // non-today day (or Free / signed-out) `tasks` omits those, and pruning
+  // against it would wipe a completed RSVP/email so it reappears unchecked.
   useEffect(() => {
     if (!hydrated) return
     const ids = new Set(tasks.map((t) => t.id))
-    const prunedDone = Object.fromEntries(Object.entries(doneById).filter(([k]) => ids.has(k)))
+    const keep = ([k]) => ids.has(k) || k.startsWith('auto:') || k.startsWith('mail:')
+    const prunedDone = Object.fromEntries(Object.entries(doneById).filter(keep))
     saveState({ v: 3, manualTasks, doneById: prunedDone, settings })
   }, [hydrated, manualTasks, doneById, settings, tasks])
 
@@ -138,7 +143,9 @@ export function useDayModel() {
   }), [])
 
   const addTask = useCallback((title, opts = {}) => {
-    const id = 'u' + Date.now()
+    // monotonic suffix so several adds in the same millisecond (e.g. autorepeat
+    // Enter) can't collide on 'u'+Date.now() and duplicate React keys.
+    const id = 'u' + Date.now() + '-' + (uidRef.current++)
     setManualTasks((ts) => [...ts, {
       id, title: title || 'New task', source: 'You', meta: opts.note || 'added just now',
       due: opts.due || 'today', urgent: !!opts.urgent, bucket: opts.bucket || 'today',
@@ -151,6 +158,9 @@ export function useDayModel() {
 
   const editTask = useCallback((id, patch) => {
     setManualTasks((ts) => ts.map((t) => (t.id === id ? { ...t, ...patch } : t)))
+    // reminders set/changed during an edit must actually (re)schedule — the
+    // edit sheet passes remindAt in the patch.
+    if (patch.remindAt) scheduleTaskReminder({ id, title: patch.title, remindAt: patch.remindAt })
   }, [])
 
   const deleteTask = useCallback((id) => {
