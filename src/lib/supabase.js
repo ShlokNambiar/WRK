@@ -13,30 +13,56 @@ export const GOOGLE_SCOPES =
   'https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/gmail.readonly'
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+  // PKCE so the OAuth redirect carries a short ?code= we exchange for a session
+  // — cleaner over a native deep link than an implicit-flow token fragment.
+  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'pkce' },
 })
+
+function isNative() {
+  if (typeof window === 'undefined') return false
+  try {
+    const cap = window.Capacitor
+    return !!(cap && typeof cap.isNativePlatform === 'function' && cap.isNativePlatform())
+  } catch { return false }
+}
 
 // Native (Capacitor) gets a deep-link redirect; web uses the current origin.
 function redirectTo() {
   if (typeof window === 'undefined') return undefined
-  try {
-    const cap = window.Capacitor
-    if (cap && typeof cap.isNativePlatform === 'function' && cap.isNativePlatform()) {
-      return 'life.pepl.wrk://auth'
-    }
-  } catch {}
-  return window.location.origin
+  return isNative() ? 'com.metis.wrk://auth' : window.location.origin
 }
 
-export function signInWithGoogle() {
-  return supabase.auth.signInWithOAuth({
+export async function signInWithGoogle() {
+  const native = isNative()
+  const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
       scopes: GOOGLE_SCOPES,
       queryParams: { access_type: 'offline', prompt: 'consent' },
       redirectTo: redirectTo(),
+      // On native we open the URL ourselves (Chrome Custom Tab) so the app's
+      // webview stays alive to receive the deep-link return; the default would
+      // navigate the webview away and it could never come back to a custom scheme.
+      skipBrowserRedirect: native,
     },
   })
+  if (error) throw error
+  if (native && data?.url) {
+    const { Browser } = await import('@capacitor/browser')
+    await Browser.open({ url: data.url })
+  }
+  return data
+}
+
+// Called from the native appUrlOpen handler with com.metis.wrk://auth?code=…
+// Exchanges the code (PKCE verifier lives in this webview's storage) → session.
+export async function completeOAuthRedirect(url) {
+  let code = null
+  try { code = new URL(url).searchParams.get('code') } catch {}
+  if (!code) return
+  const { error } = await supabase.auth.exchangeCodeForSession(code)
+  try { const { Browser } = await import('@capacitor/browser'); await Browser.close() } catch {}
+  if (error) throw error
 }
 
 export function signOut() {

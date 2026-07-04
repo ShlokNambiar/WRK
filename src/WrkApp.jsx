@@ -1,12 +1,17 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { MotionConfig, useReducedMotion } from 'framer-motion'
+import { Capacitor } from '@capacitor/core'
 import TabBar from './components/TabBar.jsx'
 import Sheet from './components/Sheet.jsx'
+import Snackbar from './components/Snackbar.jsx'
+import Confirm from './components/Confirm.jsx'
 import HomeScreen from './screens/HomeScreen.jsx'
 import TasksScreen from './screens/TasksScreen.jsx'
 import CalendarScreen from './screens/CalendarScreen.jsx'
 import AccountScreen from './screens/AccountScreen.jsx'
 import AddTaskSheet from './screens/AddTaskSheet.jsx'
+import EventDetailSheet from './screens/EventDetailSheet.jsx'
+import TaskDetailSheet from './screens/TaskDetailSheet.jsx'
 import { useDayModel } from './hooks/useDayModel.js'
 import { haptics } from './lib/haptics.js'
 import { C } from './theme.js'
@@ -33,7 +38,11 @@ export default function WrkApp() {
   const day = useDayModel()
 
   const [activeTab, setActiveTab] = useState('home')
-  const [sheet, setSheet] = useState(null) // null | {mode:'add'} | {mode:'edit', task}
+  // null | {mode:'add'} | {mode:'edit', task} | {mode:'event', ev} | {mode:'task', task}
+  const [sheet, setSheet] = useState(null)
+  const [snack, setSnack] = useState(null)
+  const [ask, setAsk] = useState(null) // Confirm dialog payload
+  const sheetDirty = useRef(false)
 
   const onTab = (key) => { haptics.light(); setActiveTab(key) }
   const openSheet = () => { haptics.success(); setSheet({ mode: 'add' }) }
@@ -41,12 +50,64 @@ export default function WrkApp() {
     const t = day.manualTasks.find((x) => x.id === id)
     if (t) { haptics.light(); setSheet({ mode: 'edit', task: t }) }
   }
-  const closeSheet = () => setSheet(null)
+  const openTaskDetail = (task) => { haptics.light(); setSheet({ mode: 'task', task }) }
+  const openEventDetail = (ev) => { haptics.light(); setSheet({ mode: 'event', ev }) }
 
-  const toggleTask = (id) => { haptics.light(); day.toggleTask(id) }
+  // A dirty add-draft asks before it's thrown away (scrim tap, back, Cancel).
+  const closeSheet = useCallback(() => {
+    if (sheetDirty.current) {
+      setAsk({
+        title: 'Discard this task?',
+        body: 'You have an unsaved task in progress.',
+        confirmLabel: 'Discard', tone: 'red',
+        onConfirm: () => { sheetDirty.current = false; setSheet(null) },
+      })
+      return
+    }
+    setSheet(null)
+  }, [])
+
+  // Android back: close dialogs/sheets first, then return Home, then leave the
+  // app (minimize, never kill). Without this listener back exits mid-draft.
+  const backState = useRef({})
+  backState.current = { sheet, ask, activeTab }
+  useEffect(() => {
+    if (!Capacitor?.isNativePlatform?.()) return
+    let sub = null
+    let on = true
+    import('@capacitor/app').then(({ App }) => {
+      if (!on) return
+      sub = App.addListener('backButton', () => {
+        const s = backState.current
+        if (s.ask) setAsk(null)
+        else if (s.sheet) closeSheet()
+        else if (s.activeTab !== 'home') setActiveTab('home')
+        else App.minimizeApp()
+      })
+    }).catch(() => {})
+    return () => { on = false; sub?.then?.(); sub?.remove?.() }
+  }, [closeSheet])
+
+  // toggle with undo: completing a task offers a 5s way back
+  const toggleTask = (id) => {
+    haptics.light()
+    const t = day.tasks.find((x) => x.id === id)
+    day.toggleTask(id)
+    if (t && !t.done) {
+      setSnack({ key: 'done' + id + Date.now(), text: `Done: ${t.title}`, actionLabel: 'Undo', onAction: () => day.toggleTask(id) })
+    }
+  }
+  const onDeleted = (removed) => {
+    if (!removed) return
+    setSnack({ key: 'del' + removed.id, text: `Deleted “${removed.title}”`, actionLabel: 'Undo', onAction: () => day.restoreTask(removed) })
+  }
   const dayWithHaptics = { ...day, toggleTask }
 
   const Screen = SCREENS[activeTab] || HomeScreen
+
+  const sheetLabel = sheet?.mode === 'edit' ? 'Edit task'
+    : sheet?.mode === 'event' ? 'Event details'
+      : sheet?.mode === 'task' ? 'Task details' : 'New task'
 
   // frame styles (responsive)
   const outer = mobile
@@ -69,13 +130,33 @@ export default function WrkApp() {
             {/* fake notch (desktop preview only) */}
             {!mobile && <div style={{ position: 'absolute', top: 13, left: '50%', transform: 'translateX(-50%)', width: 108, height: 30, background: '#0a0a0a', borderRadius: 16, zIndex: 50 }} />}
 
-            <Screen day={dayWithHaptics} mobile={mobile} reduced={reduced} onAddTask={openSheet} goToAccount={() => setActiveTab('card')} openEdit={openEdit} />
+            <Screen
+              day={dayWithHaptics} mobile={mobile} reduced={reduced}
+              onAddTask={openSheet} goToAccount={() => setActiveTab('card')}
+              openEdit={openEdit} openTaskDetail={openTaskDetail} openEventDetail={openEventDetail}
+              onSnack={setSnack} onAsk={setAsk}
+            />
 
             <TabBar active={activeTab} reduced={reduced} onTab={onTab} onAdd={openSheet} />
 
-            <Sheet open={!!sheet} onClose={closeSheet} reduced={reduced}>
-              <AddTaskSheet day={dayWithHaptics} editing={sheet?.mode === 'edit' ? sheet.task : null} onClose={closeSheet} />
+            <Sheet open={!!sheet} onClose={closeSheet} reduced={reduced} label={sheetLabel}>
+              {(sheet?.mode === 'add' || sheet?.mode === 'edit') && (
+                <AddTaskSheet
+                  day={dayWithHaptics}
+                  editing={sheet?.mode === 'edit' ? sheet.task : null}
+                  onClose={closeSheet}
+                  onDirtyChange={(d) => { sheetDirty.current = d }}
+                  onDeleted={onDeleted}
+                />
+              )}
+              {sheet?.mode === 'event' && <EventDetailSheet ev={sheet.ev} onClose={() => setSheet(null)} />}
+              {sheet?.mode === 'task' && (
+                <TaskDetailSheet task={sheet.task} day={dayWithHaptics} onClose={() => setSheet(null)} onSnack={setSnack} />
+              )}
             </Sheet>
+
+            <Snackbar snack={snack} onDismiss={() => setSnack(null)} reduced={reduced} />
+            <Confirm ask={ask} onClose={() => setAsk(null)} reduced={reduced} />
           </div>
         </div>
       </div>

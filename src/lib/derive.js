@@ -175,39 +175,98 @@ export function buildTimeline(events, now = new Date()) {
     const shown = others.slice(0, 3).map((a) => ({ grad: avatarGradient(a.email) }))
     const overflow = Math.max(0, others.length - shown.length)
     const highlighted = !!ev.movedFrom
+    const endsSameHalf = (ev.start.getHours() >= 12) === (ev.end.getHours() >= 12)
     return {
       id: ev.id,
-      time: fmtTime(ev.start),
-      ampm: h >= 12 ? 'PM' : 'AM',
+      time: ev.allDay ? 'All' : fmtTime(ev.start),
+      ampm: ev.allDay ? 'day' : h >= 12 ? 'PM' : 'AM',
       accent: accentFor(ev),
       title: ev.title,
-      durLabel: fmtDur(ev.durationMin),
+      allDay: !!ev.allDay,
+      // "9:30–10:15 AM" so "when am I free?" needs no arithmetic
+      durLabel: ev.allDay ? 'all day'
+        : `${fmtTime(ev.start)}${endsSameHalf ? '' : (ev.start.getHours() >= 12 ? ' pm' : ' am')}–${fmtTime(ev.end)} ${ev.end.getHours() >= 12 ? 'pm' : 'am'}`,
       avatars: shown,
       overflow,
-      joinUrl: ev.isVideo ? ev.joinUrl || '#' : null,
-      location: !ev.isVideo ? ev.location : null,
+      // only a real URL renders a Join button — never a '#' placeholder
+      joinUrl: ev.joinUrl && ev.joinUrl !== '#' ? ev.joinUrl : null,
+      // a hybrid meeting keeps its room even when there's a video link
+      location: ev.location || null,
       highlighted,
       movedBadge: ev.movedFrom ? `Moved from ${ev.movedFrom}` : null,
-      isPast: ev.end < now,
+      isPast: !ev.allDay && ev.end < now,
+      // full data for the detail sheet
+      raw: ev,
     }
   })
 }
 
+// ---------- due dates ----------
+// Manual tasks carry a real dueDate ('YYYY-MM-DD' local) so buckets roll over:
+// yesterday's "today" task becomes overdue tomorrow instead of lying forever.
+export function isoDateStr(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+export function addDays(d, n) {
+  const x = new Date(d)
+  x.setDate(x.getDate() + n)
+  return x
+}
+
+// Human label for a dueDate relative to now: 'today' / 'tomorrow' / 'Fri' / 'Jul 12'.
+export function dueLabel(dueDate, now = new Date()) {
+  if (!dueDate) return ''
+  const todayKey = isoDateStr(now)
+  if (dueDate === todayKey) return 'today'
+  if (dueDate === isoDateStr(addDays(now, 1))) return 'tomorrow'
+  const d = new Date(dueDate + 'T00:00:00')
+  if (isNaN(d)) return dueDate
+  const diff = Math.round((d - new Date(todayKey + 'T00:00:00')) / 864e5)
+  if (diff > 1 && diff < 7) return new Intl.DateTimeFormat('en-US', { weekday: 'short' }).format(d)
+  return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(d)
+}
+
 // ---------- task grouping (All Tasks screen) ----------
-// Buckets: overdue / today / week / done. Providers may set t.bucket; otherwise
+// Buckets: overdue / today / week / done. A real dueDate wins (and rolls over
+// day to day); providers may still set t.bucket (feed email tasks); otherwise
 // we infer a sensible default.
 const BUCKETS = new Set(['overdue', 'today', 'week', 'done'])
-export function bucketFor(t) {
+export function bucketFor(t, now = new Date()) {
   if (t.done) return 'done'
+  if (t.dueDate) {
+    const todayKey = isoDateStr(now)
+    if (t.dueDate < todayKey) return 'overdue'
+    if (t.dueDate === todayKey) return 'today'
+    return 'week'
+  }
   // clamp any unknown bucket (a feed emailTask can carry e.g. 'tomorrow') to a
   // real column — otherwise groupTasks would index an undefined array and throw.
   if (t.bucket && BUCKETS.has(t.bucket)) return t.bucket
   return 'today'
 }
-export function groupTasks(tasks) {
+export function groupTasks(tasks, now = new Date()) {
   const g = { overdue: [], today: [], week: [], done: [] }
-  for (const t of tasks) g[bucketFor(t)].push(t)
+  for (const t of tasks) g[bucketFor(t, now)].push(t)
   return g
+}
+
+// ---------- live headline stats ----------
+// The brief card's numbers, recomputed from CURRENT state (feed stats are baked
+// at build time and go stale the moment the user checks something off — the
+// tiles must never disagree with the list below them).
+export function liveStats(events, tasks) {
+  const open = tasks.filter((t) => !t.done)
+  // meetings by the same heuristic the backend uses: kind when the feed carries
+  // it, else "someone else is on it or there's a link to join".
+  const meetings = events.filter((e) =>
+    e.kind ? e.kind === 'meeting' : (e.attendeeCount > 0 || e.isVideo)).length
+  const flagged = open.filter((t) => t.urgent).length
+  return [
+    { n: String(meetings), label: 'meetings' },
+    { n: String(open.length), label: 'to do' },
+    { n: String(flagged), label: 'flagged' },
+  ]
 }
 
 // ---------- merge auto + manual tasks ----------

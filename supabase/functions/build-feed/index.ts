@@ -1,22 +1,32 @@
-// build-feed: the daily per-user job. Triggered by pg_cron (batch, no body) or
-// with { "user_id": "..." } for a single user. For each user it mints a Google
-// access token from the stored refresh token, fetches today's calendar (+ Gmail
-// for Pro), builds the brief (AI for Pro — see aiBrief; template for Free), and
-// upserts ONLY the derived feed. Raw email/calendar content is never persisted.
+// build-feed: the per-user feed builder. Triggered by pg_cron hourly with
+// { "mode": "hourly" } (builds users whose local hour == their brief_hour), by
+// ops with no body (all users) or { "user_id": "..." } (one user), or by a
+// signed-in user with their own JWT (rebuild self, rate-limited). For each user
+// it mints a Google access token from the stored refresh token, fetches the
+// next 7 days of calendar (+ Gmail for Pro), builds the brief (AI for Pro — see
+// aiBrief; template for Free), and upserts ONLY the derived feed. Raw
+// email/calendar content is never persisted.
 //
-// Auth: this function is internal. verify_jwt is disabled at the platform level;
-// instead we require the caller to present the service-role key as a Bearer
-// token (pg_cron does this). No client can reach it.
+// Auth: verify_jwt is disabled at the platform level; we accept EITHER the
+// service-role key as Bearer (pg_cron / ops — full batch powers) OR a user's
+// own Supabase JWT (verified via admin.auth.getUser — that user only).
+// Browsers/webviews call the user path, so CORS is answered like store-token.
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import { buildEvents, buildEmailTasks, templateBrief, assemblePayload, computeStats, type Brief, type FeedEvent, type EmailTask } from "./buildPayload.ts";
-import { mintAccessToken, fetchTodayEvents, fetchActionableUnread, TokenRevokedError } from "./google.ts";
+import { buildEvents, buildEmailTasks, templateBrief, assemblePayload, computeStats, groupEventsByDay, applyMovedFrom, dayKeyInTz, usersDueNow, rateLimitRetryAfter, type Brief, type FeedEvent, type EmailTask, type FeedPayload } from "./buildPayload.ts";
+import { mintAccessToken, fetchWeekEvents, fetchActionableUnread, TokenRevokedError } from "./google.ts";
 import { claudeBrief } from "./claudeBrief.ts";
 import { geminiBrief } from "./geminiBrief.ts";
 import { partitionCandidates } from "./emailFilter.ts";
 import { classifyActionable } from "./actionability.ts";
 
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
 const json = (body: unknown, status: number) =>
-  new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+  new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -39,7 +49,7 @@ function aiBrief(events: FeedEvent[], emailTasks: EmailTask[]): Promise<Brief> {
 
 const AI_KEYS = { anthropic: ANTHROPIC_API_KEY || undefined, gemini: GEMINI_API_KEY || undefined };
 
-type UserRow = { user_id: string; tier: string; tz: string; name: string; email: string };
+type UserRow = { user_id: string; tier: string; tz: string; name: string; email: string; brief_hour: number };
 
 // The user's per-sender curation lists (mute = never, allow = always).
 async function loadEmailRules(userId: string): Promise<{ muteSet: Set<string>; allowSet: Set<string> }> {
@@ -65,7 +75,7 @@ async function loadUsers(userId?: string): Promise<UserRow[]> {
   if (ids.length === 0) return [];
 
   const [{ data: profs }, { data: ents }] = await Promise.all([
-    admin.from("profiles").select("id, name, email, tz").in("id", ids),
+    admin.from("profiles").select("id, name, email, tz, brief_hour").in("id", ids),
     admin.from("entitlements").select("user_id, tier").in("user_id", ids),
   ]);
   const pById = new Map((profs ?? []).map((p: any) => [p.id, p]));
@@ -78,6 +88,7 @@ async function loadUsers(userId?: string): Promise<UserRow[]> {
       tz: p.tz ?? "Asia/Kolkata",
       name: p.name ?? "there",
       email: p.email ?? "",
+      brief_hour: p.brief_hour ?? 7,
     };
   });
 }
@@ -89,8 +100,18 @@ async function buildForUser(u: UserRow, now: Date): Promise<{ ok: boolean; reaso
 
   try {
     const access = await mintAccessToken(refresh as string, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET);
-    const rawCal = await fetchTodayEvents(access, u.tz, now);
-    const events = buildEvents(rawCal);
+    const rawCal = await fetchWeekEvents(access, u.tz, now);
+    let events = buildEvents(rawCal);
+
+    // Diff against the previous feed so a rescheduled meeting carries a
+    // "moved from <old time>" chip. Best-effort — no previous feed, no chips.
+    const { data: prevRow } = await admin.from("feeds").select("payload").eq("user_id", u.user_id).maybeSingle();
+    events = applyMovedFrom(events, (prevRow?.payload ?? null) as FeedPayload | null, u.tz);
+
+    // The week grouped by local date (all 7 keys always present); the brief and
+    // the headline stats describe TODAY only.
+    const days = groupEventsByDay(events, now, u.tz);
+    const todayEvents = days[dayKeyInTz(now, u.tz)] ?? [];
 
     let emailTasks: ReturnType<typeof buildEmailTasks> = [];
     let brief;
@@ -108,22 +129,22 @@ async function buildForUser(u: UserRow, now: Date): Promise<{ ok: boolean; reaso
       }
       emailTasks = buildEmailTasks({ messages: [...allow, ...aiKept] });
       try {
-        brief = await aiBrief(events, emailTasks);
+        brief = await aiBrief(todayEvents, emailTasks);
       } catch (_e) {
-        brief = templateBrief(events, emailTasks); // graceful AI fallback
+        brief = templateBrief(todayEvents, emailTasks); // graceful AI fallback
       }
     } else {
-      brief = templateBrief(events, []); // Free: calendar only, no Gmail
+      brief = templateBrief(todayEvents, []); // Free: calendar only, no Gmail
     }
 
     // The AI writes the prose; the headline counts are always the deterministic
-    // ones (meetings-by-kind), so a model miscount can never surface wrong numbers.
-    brief.stats = computeStats(events, emailTasks);
+    // ones (meetings-by-kind, TODAY only — never the whole week), so a model
+    // miscount can never surface wrong numbers.
+    brief.stats = computeStats(todayEvents, emailTasks);
 
-    const today = new Intl.DateTimeFormat("en-CA", { timeZone: u.tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
     const payload = assemblePayload({
       profile: { name: u.name, email: u.email, avatarUrl: null },
-      brief, events, emailTasks, today, now,
+      brief, days, emailTasks, now,
     });
 
     const { error: upErr } = await admin.from("feeds").upsert({
@@ -150,24 +171,8 @@ async function buildForUser(u: UserRow, now: Date): Promise<{ ok: boolean; reaso
   }
 }
 
-Deno.serve(async (req) => {
-  // Internal-only: require the service-role key as Bearer.
-  const auth = req.headers.get("Authorization") ?? "";
-  if (!SERVICE_KEY || auth !== `Bearer ${SERVICE_KEY}`) return json({ error: "unauthorized" }, 401);
-
-  let body: { user_id?: string } = {};
-  if (req.headers.get("content-length") && req.headers.get("content-length") !== "0") {
-    try { body = await req.json(); } catch { /* batch mode */ }
-  }
-
-  const now = new Date();
-  let users: UserRow[];
-  try {
-    users = await loadUsers(body.user_id);
-  } catch (e) {
-    return json({ error: (e as Error).message }, 500);
-  }
-
+// Run the build loop and shape the response — shared by every auth path.
+async function runBuilds(users: UserRow[], now: Date): Promise<Response> {
   const results: Record<string, { ok: boolean; reason?: string }> = {};
   for (const u of users) {
     // One user's failure never aborts the batch.
@@ -180,4 +185,51 @@ Deno.serve(async (req) => {
 
   const ok = Object.values(results).filter((r) => r.ok).length;
   return json({ users: users.length, built: ok, results }, 200);
+}
+
+Deno.serve(async (req) => {
+  // CORS preflight — the user-invoked rebuild comes from a browser/webview.
+  if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+
+  const auth = req.headers.get("Authorization") ?? "";
+  const token = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
+  if (!token) return json({ error: "unauthorized" }, 401);
+
+  const now = new Date();
+
+  // Path 1: service-role key (pg_cron / ops) — batch powers.
+  if (SERVICE_KEY && token === SERVICE_KEY) {
+    let body: { user_id?: string; mode?: string } = {};
+    if (req.headers.get("content-length") && req.headers.get("content-length") !== "0") {
+      try { body = await req.json(); } catch { /* batch mode */ }
+    }
+
+    let users: UserRow[];
+    try {
+      users = await loadUsers(body.user_id);
+    } catch (e) {
+      return json({ error: (e as Error).message }, 500);
+    }
+    // hourly cron: only users whose local hour equals their brief_hour.
+    if (body.mode === "hourly") users = usersDueNow(users, now);
+    return runBuilds(users, now);
+  }
+
+  // Path 2: a user's own JWT — rebuild ONLY that user, rate-limited so a
+  // pull-to-refresh loop can't hammer Google/the AI providers.
+  const { data: userData, error: uErr } = await admin.auth.getUser(token);
+  const userId = userData?.user?.id;
+  if (uErr || !userId) return json({ error: "unauthorized" }, 401);
+
+  const { data: feedRow } = await admin.from("feeds").select("updated_at").eq("user_id", userId).maybeSingle();
+  const retryAfter = rateLimitRetryAfter(feedRow?.updated_at ?? null, now);
+  if (retryAfter > 0) return json({ error: "rate_limited", retryAfter }, 429);
+
+  let users: UserRow[];
+  try {
+    users = await loadUsers(userId);
+  } catch (e) {
+    return json({ error: (e as Error).message }, 500);
+  }
+  return runBuilds(users, now);
 });

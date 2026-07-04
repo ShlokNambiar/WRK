@@ -1,10 +1,16 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Pressable from '../components/Pressable.jsx'
 import Toggle from '../components/Toggle.jsx'
 import Avatar from '../components/Avatar.jsx'
 import { C, FONT_SERIF, FONT_SANS } from '../theme.js'
 import { signInWithGoogle } from '../lib/supabase.js'
+import { listEmailRules, removeEmailRule } from '../lib/cloud.js'
+import { restorePurchases } from '../lib/billing.js'
+import { openUrl } from '../lib/openUrl.js'
 import { useMeasuredHeight } from '../hooks/useMeasuredHeight.js'
+
+const PRIVACY_URL = 'https://github.com/ShlokNambiar/WRK/blob/main/docs/PRIVACY.md'
+const FEEDBACK_MAILTO = 'mailto:shlok@pepl.life?subject=WRK%20feedback'
 
 function relativeTime(iso) {
   if (!iso) return 'never'
@@ -17,6 +23,13 @@ function relativeTime(iso) {
   const hrs = Math.floor(mins / 60)
   if (hrs < 24) return hrs + 'h ago'
   return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+// hours since the feed was generated (Infinity when unknown)
+function ageHours(iso) {
+  if (!iso) return Infinity
+  const t = new Date(iso).getTime()
+  return Number.isNaN(t) ? Infinity : (Date.now() - t) / 3600e3
 }
 
 // '7:00 AM' -> '07:00'
@@ -44,16 +57,25 @@ function to12h(hhmm) {
   return h + ':' + min + ' ' + ap
 }
 
-export default function AccountScreen({ day, mobile, reduced }) {
+export default function AccountScreen({ day, mobile, reduced, onSnack, onAsk }) {
   const {
-    profile, settings, setSetting, feedMeta, generatedAt, refresh,
-    signedIn, user, isPro, signOut, upgradeToPro,
+    profile, settings, setSetting, feedMeta, generatedAt, rebuild, rebuilding,
+    signedIn, user, isPro, signOut, upgradeToPro, notifStatus, enableNotifications,
   } = day
   const [upgradeNote, setUpgradeNote] = useState('')
   const [signingIn, setSigningIn] = useState(false)
   const [signInErr, setSignInErr] = useState('')
+  const [rules, setRules] = useState(null) // null = not loaded
   const headerTop = mobile ? 'calc(14px + env(safe-area-inset-top))' : '54px'
   const [headerRef, headerH] = useMeasuredHeight()
+
+  // muted/allowed senders (the curation dial behind the email tasks)
+  useEffect(() => {
+    if (!signedIn) { setRules(null); return }
+    let on = true
+    listEmailRules().then((r) => { if (on) setRules(r) }).catch(() => { if (on) setRules([]) })
+    return () => { on = false }
+  }, [signedIn])
 
   // Sign-in / reconnect with real feedback: on success the page redirects (so
   // we leave the spinner on); on error/cancel we surface a message and re-enable.
@@ -69,21 +91,39 @@ export default function AccountScreen({ day, mobile, reduced }) {
     }
   }
 
+  const confirmSignOut = () => {
+    onAsk?.({
+      title: 'Sign out?',
+      body: 'Your feed stops updating on this device. Your tasks are backed up to your account.',
+      confirmLabel: 'Sign out', tone: 'red',
+      onConfirm: signOut,
+    })
+  }
+
+  const doRefresh = async () => {
+    const r = await rebuild()
+    if (r === 'built') onSnack?.({ text: 'Feed rebuilt — fresh as of now' })
+    else if (r === 'rate_limited') onSnack?.({ text: 'Just rebuilt — try again in a few minutes' })
+    else if (r === 'error' && signedIn) onSnack?.({ text: "Couldn't rebuild — showing the last saved feed" })
+  }
+
   // Prefer the feed profile; fall back to the auth user (e.g. before first feed build).
   const name = profile.name || user?.user_metadata?.full_name || user?.user_metadata?.name || 'Your name'
   const email = profile.email || user?.email || '—'
   const avatarUrl = profile.avatarUrl || user?.user_metadata?.avatar_url || null
   const needsReauth = !!feedMeta.needsReauth
 
+  // "Live" has a freshness threshold now — a dead cron shows amber, not green
+  const hrs = ageHours(generatedAt)
   const status = feedMeta.pending
     ? { text: 'Preparing your feed', color: '#b06d0a' }
     : feedMeta.demo
       ? { text: 'Demo data', color: C.muted }
       : feedMeta.stale
         ? { text: 'Offline — last saved', color: '#b06d0a' }
-        : { text: 'Live', color: C.green }
-  // Don't claim "Updated just now" when there's no real feed yet (the demo/pending
-  // payload is stamped `now`, which would read as a successful refresh).
+        : hrs > 30
+          ? { text: 'Out of date', color: C.red }
+          : { text: 'Live', color: C.green }
   const updatedSub = feedMeta.pending
     ? 'Waiting for your first brief'
     : feedMeta.demo
@@ -139,23 +179,96 @@ export default function AccountScreen({ day, mobile, reduced }) {
                 action={<StatusDot color={status.color} />}
                 border
               />
-              <Pressable onPress={refresh} style={{ display: 'block', width: '100%', textAlign: 'left' }}>
-                <Row title={<span style={{ color: C.blue }}>Refresh now</span>}
-                  sub="Pull the latest feed" action={<Chevron color={C.blue} />} />
+              <Pressable onPress={doRefresh} style={{ display: 'block', width: '100%', textAlign: 'left' }}>
+                <Row title={<span style={{ color: C.blue }}>{rebuilding ? 'Rebuilding…' : 'Refresh now'}</span>}
+                  sub={rebuilding ? 'Fetching your calendar & inbox' : 'Rebuild your feed from Google, right now'} action={<Chevron color={C.blue} />} />
               </Pressable>
             </Card>
+
+            {/* daily brief */}
+            <SectionLabel>Daily brief</SectionLabel>
+            <Card>
+              <Row title="Morning brief time" sub="When your feed is built & you're pinged"
+                action={
+                  <input type="time" value={to24h(settings.briefTime)}
+                    onChange={(e) => e.target.value && setSetting('briefTime', to12h(e.target.value))}
+                    aria-label="Morning brief time"
+                    style={{
+                      fontFamily: FONT_SANS, fontSize: 13, fontWeight: 600, color: C.blue,
+                      background: '#eceaf9', border: 'none', borderRadius: 11, padding: '0 12px',
+                      minHeight: 44, outline: 'none', appearance: 'none', WebkitAppearance: 'none',
+                    }} />
+                }
+                border />
+              {notifStatus !== 'granted' && notifStatus !== 'unavailable' && (
+                <Pressable onPress={enableNotifications} style={{ display: 'block', width: '100%', textAlign: 'left' }}>
+                  <Row title={<span style={{ color: C.blue }}>Turn on notifications</span>}
+                    sub={notifStatus === 'denied' ? 'Blocked — enable WRK in Android Settings' : 'One ping when your brief is ready'}
+                    action={<Chevron color={C.blue} />} border />
+                </Pressable>
+              )}
+              <Row title="Auto-draft tasks from email" sub="Let WRK suggest to-dos"
+                action={<Toggle on={settings.autoDraft} onChange={(v) => setSetting('autoDraft', v)} reduced={reduced} />} />
+            </Card>
+
+            {/* sender curation */}
+            {isPro && (
+              <>
+                <SectionLabel>Email senders</SectionLabel>
+                <Card>
+                  {rules === null && <Row title="Muted senders" sub="Loading…" />}
+                  {rules !== null && rules.length === 0 && (
+                    <Row title="Muted senders" sub="None yet — mute one from any email task" />
+                  )}
+                  {(rules || []).map((r, i) => (
+                    <Row key={r.sender}
+                      title={<span style={{ fontSize: 13.5 }}>{r.sender}</span>}
+                      sub={r.mode === 'mute' ? 'Muted — never becomes a task' : 'Always allowed'}
+                      action={
+                        <Pressable
+                          onPress={async () => {
+                            try {
+                              await removeEmailRule(r.sender)
+                              setRules((rs) => rs.filter((x) => x.sender !== r.sender))
+                              onSnack?.({ text: `Removed rule for ${r.sender}` })
+                            } catch { onSnack?.({ text: "Couldn't remove — try again" }) }
+                          }}
+                          ariaLabel={`Remove rule for ${r.sender}`}
+                          style={{ fontSize: 12.5, fontWeight: 600, color: C.red, padding: '10px 6px', flex: 'none' }}
+                        >Remove</Pressable>
+                      }
+                      border={i < rules.length - 1} />
+                  ))}
+                </Card>
+              </>
+            )}
 
             {/* subscription */}
             <SectionLabel>Subscription</SectionLabel>
             <Card>
-              <Row title="Plan" sub={isPro ? 'Pro — full brief + email tasks' : 'Free — calendar + tasks'}
+              <Row title="Plan"
+                sub={isPro ? 'Pro — full brief + email tasks · free during beta' : 'Free — calendar + tasks'}
                 action={<TierBadge pro={isPro} />} border />
               {isPro ? (
-                <Pressable
-                  onPress={() => { try { window.open('https://play.google.com/store/account/subscriptions', '_blank', 'noopener') } catch {} }}
-                  style={{ display: 'block', width: '100%', textAlign: 'left' }}>
-                  <Row title="Manage subscription" sub="Billing & plan · opens Google Play" action={<Chevron />} />
-                </Pressable>
+                <>
+                  <Pressable
+                    onPress={() => openUrl('https://play.google.com/store/account/subscriptions')}
+                    style={{ display: 'block', width: '100%', textAlign: 'left' }}>
+                    <Row title="Manage subscription" sub="Billing & plan · opens Google Play" action={<Chevron />} border />
+                  </Pressable>
+                  <Pressable
+                    onPress={async () => {
+                      const r = await restorePurchases()
+                      onSnack?.({
+                        text: r.status === 'pro' ? 'Pro restored 🎉'
+                          : r.status === 'unavailable' ? 'Nothing to restore yet — billing opens after beta'
+                            : r.status === 'free' ? 'No active subscription found' : "Couldn't reach the store",
+                      })
+                    }}
+                    style={{ display: 'block', width: '100%', textAlign: 'left' }}>
+                    <Row title="Restore purchases" sub="Bought Pro on another device?" action={<Chevron />} />
+                  </Pressable>
+                </>
               ) : (
                 <Pressable
                   onPress={async () => {
@@ -174,26 +287,10 @@ export default function AccountScreen({ day, mobile, reduced }) {
               )}
             </Card>
 
-            {/* daily brief */}
-            <SectionLabel>Daily brief</SectionLabel>
-            <Card>
-              <Row title="Morning brief time" sub="Delivered before you wake"
-                action={
-                  <input type="time" value={to24h(settings.briefTime)}
-                    onChange={(e) => e.target.value && setSetting('briefTime', to12h(e.target.value))}
-                    style={{
-                      fontFamily: FONT_SANS, fontSize: 13, fontWeight: 600, color: C.blue,
-                      background: '#eceaf9', border: 'none', borderRadius: 11, padding: '0 12px',
-                      minHeight: 44, outline: 'none', appearance: 'none', WebkitAppearance: 'none',
-                    }} />
-                }
-                border />
-              <Row title="Auto-draft tasks from email" sub="Let WRK suggest to-dos"
-                action={<Toggle on={settings.autoDraft} onChange={(v) => setSetting('autoDraft', v)} reduced={reduced} />} />
-            </Card>
+            <AboutCard onSnack={onSnack} />
 
-            {/* sign out */}
-            <Pressable onPress={signOut}
+            {/* sign out — confirmed, because one stray tap used to nuke the session */}
+            <Pressable onPress={confirmSignOut}
               style={{ width: '100%', background: C.card, borderRadius: 16, padding: 15, textAlign: 'center', fontSize: 14.5, fontWeight: 600, color: C.red, boxShadow: '0 6px 20px rgba(0,0,0,.05)' }}>
               Sign out
             </Pressable>
@@ -201,12 +298,19 @@ export default function AccountScreen({ day, mobile, reduced }) {
         ) : (
           /* logged out */
           <div style={{ padding: '4px 4px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '2px 0 22px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '2px 0 18px' }}>
               <Avatar size={60} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontFamily: FONT_SERIF, fontWeight: 600, fontSize: 22, lineHeight: 1.1, color: C.ink }}>Sign in to WRK</div>
-                <div style={{ fontSize: 12.5, color: C.muted, marginTop: 5 }}>Connect Google to see your real day</div>
+                <div style={{ fontSize: 12.5, color: C.muted, marginTop: 5 }}>Your day, auto-assembled every morning</div>
               </div>
+            </div>
+
+            {/* what we access & why — trust before the consent screen, not after */}
+            <div style={{ background: C.card, borderRadius: 16, padding: '14px 16px', boxShadow: '0 6px 20px rgba(0,0,0,.05)', marginBottom: 14 }}>
+              <TrustLine icon="📅" text={<><b style={{ fontWeight: 600 }}>Calendar · read-only.</b> Builds your daily schedule & brief.</>} />
+              <TrustLine icon="✉️" text={<><b style={{ fontWeight: 600 }}>Gmail · read-only.</b> Finds emails that need a reply and drafts them as tasks. Only subject + sender are processed; bodies are never stored.</>} />
+              <TrustLine icon="🔒" text={<>WRK can’t send, delete, or change anything in your account.</>} last />
             </div>
 
             <Pressable onPress={handleSignIn} scale={0.98} disabled={signingIn}
@@ -216,15 +320,49 @@ export default function AccountScreen({ day, mobile, reduced }) {
             </Pressable>
             {signInErr && <p style={{ fontSize: 12.5, color: C.red, margin: '10px 6px 0' }}>{signInErr}</p>}
 
-            <p style={{ fontSize: 12, lineHeight: 1.5, color: C.muted, margin: '16px 6px 0' }}>
-              During the beta you may see a “Google hasn’t verified this app” screen — tap <b style={{ fontWeight: 600, color: C.inkSoft }}>Advanced → Continue</b>. That’s expected.
+            <p style={{ fontSize: 12, lineHeight: 1.5, color: C.muted, margin: '14px 6px 0' }}>
+              During the beta you may see a “Google hasn’t verified this app” screen — tap <b style={{ fontWeight: 600, color: C.inkSoft }}>Advanced → Continue</b>. That’s expected while our verification is in review.
             </p>
+            <p style={{ fontSize: 12, margin: '10px 6px 0' }}>
+              <Pressable onPress={() => openUrl(PRIVACY_URL)} style={{ color: C.blue, fontWeight: 600, fontSize: 12, padding: '8px 0' }}>Read the privacy policy ›</Pressable>
+            </p>
+
+            <div style={{ marginTop: 20 }}>
+              <AboutCard onSnack={onSnack} />
+            </div>
           </div>
         )}
 
         <div style={{ height: mobile ? 'calc(140px + env(safe-area-inset-bottom))' : 130 }} />
       </main>
     </>
+  )
+}
+
+// About / help — privacy, feedback, version. Play requires the policy IN app.
+function AboutCard({ onSnack }) {
+  return (
+    <>
+      <SectionLabel>About</SectionLabel>
+      <Card>
+        <Pressable onPress={() => openUrl(PRIVACY_URL)} style={{ display: 'block', width: '100%', textAlign: 'left' }}>
+          <Row title="Privacy policy" sub="What we read, what we never store" action={<Chevron />} border />
+        </Pressable>
+        <Pressable onPress={() => openUrl(FEEDBACK_MAILTO)} style={{ display: 'block', width: '100%', textAlign: 'left' }}>
+          <Row title="Send feedback" sub="Beta bugs & ideas — straight to the maker" action={<Chevron />} border />
+        </Pressable>
+        <Row title="Version" sub="WRK beta" action={<span style={{ fontSize: 12, color: C.faint }}>1.0</span>} />
+      </Card>
+    </>
+  )
+}
+
+function TrustLine({ icon, text, last }) {
+  return (
+    <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', paddingBottom: last ? 0 : 11, marginBottom: last ? 0 : 11, borderBottom: last ? 'none' : '1px solid #f3f2ec' }}>
+      <span aria-hidden="true" style={{ fontSize: 14, flex: 'none', marginTop: 1 }}>{icon}</span>
+      <span style={{ fontSize: 12.5, lineHeight: 1.5, color: C.inkSoft }}>{text}</span>
+    </div>
   )
 }
 
@@ -257,7 +395,7 @@ function Card({ children }) {
 }
 function Row({ icon, title, sub, action, border }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '13px 15px', borderBottom: border ? '1px solid #f3f2ec' : 'none' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '13px 15px', borderBottom: border ? '1px solid #f3f2ec' : 'none', minHeight: 52 }}>
       {icon}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 14, fontWeight: 600, color: C.ink, fontFamily: FONT_SANS }}>{title}</div>

@@ -58,12 +58,28 @@ function parseTime(timeStr) {
   }
 }
 
-export async function initNotifications() {
+// Check (never prompt). 'granted' | 'denied' | 'prompt' | 'unavailable'.
+export async function notificationStatus() {
+  try {
+    const LN = await getLN()
+    if (!LN) return 'unavailable'
+    const { display } = await LN.checkPermissions()
+    if (display === 'granted') return 'granted'
+    if (display === 'denied') return 'denied'
+    return 'prompt'
+  } catch {}
+  return 'unavailable'
+}
+
+// Ask the OS — call this ONLY from an explicit user action (the priming card /
+// a reminder chip), never on app mount: a cold permission dialog two seconds
+// into first launch gets reflex-denied and kills the morning-brief ping forever.
+export async function requestNotifications() {
   try {
     const LN = await getLN()
     if (!LN) return false
-    await LN.requestPermissions()
-    return true
+    const { display } = await LN.requestPermissions()
+    return display === 'granted'
   } catch {}
   return false
 }

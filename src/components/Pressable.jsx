@@ -7,6 +7,7 @@ export default function Pressable({
   onPress,
   style,
   ariaLabel,
+  ariaPressed,
   as = 'button',
   scale = 0.95,
   stop = false,
@@ -31,6 +32,7 @@ export default function Pressable({
     <Comp
       type={as === 'button' ? 'button' : undefined}
       aria-label={ariaLabel}
+      aria-pressed={ariaPressed}
       onClick={(e) => {
         if (stop) e.stopPropagation()
         onPress?.(e)

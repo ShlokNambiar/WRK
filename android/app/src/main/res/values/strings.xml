@@ -2,6 +2,6 @@
 <resources>
     <string name="app_name">WRK</string>
     <string name="title_activity_main">WRK</string>
-    <string name="package_name">life.pepl.wrk</string>
-    <string name="custom_url_scheme">life.pepl.wrk</string>
+    <string name="package_name">com.metis.wrk</string>
+    <string name="custom_url_scheme">com.metis.wrk</string>
 </resources>

@@ -1,7 +1,7 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'life.pepl.wrk',
+  appId: 'com.metis.wrk',
   appName: 'WRK',
   webDir: 'dist'
 };

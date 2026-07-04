@@ -24,13 +24,17 @@ export function isoDate(d) {
 function toGoogle(e) {
   return {
     id: e.id, summary: e.title, description: e.description, location: e.location,
-    start: { dateTime: e.start }, end: { dateTime: e.end },
+    // all-day events keep bare dates so normalizeEvent parses them as local days
+    start: e.allDay ? { date: e.start } : { dateTime: e.start },
+    end: e.allDay ? { date: e.end } : { dateTime: e.end },
     hangoutLink: e.joinUrl || undefined,
     attendees: (e.attendees || []).map((a) => ({
-      email: a.email, self: a.self, organizer: a.organizer,
+      email: a.email, displayName: a.name || undefined, self: a.self, organizer: a.organizer,
       responseStatus: a.self ? (a.responseStatus || e.responseStatus) : a.responseStatus,
     })),
     _movedFrom: e.movedFrom,
+    _allDay: !!e.allDay,
+    _kind: e.kind || null,
   }
 }
 
@@ -39,7 +43,8 @@ export function normalizeDay(rawEvents = []) {
 }
 
 // ---- demo payload (clearly labeled; shown only until a feed is configured) ----
-function at(now, h, m) { const d = new Date(now); d.setHours(h, m, 0, 0); return d.toISOString() }
+function at(now, h, m, plusDays = 0) { const d = new Date(now); d.setDate(d.getDate() + plusDays); d.setHours(h, m, 0, 0); return d.toISOString() }
+function dayKey(now, plusDays) { const d = new Date(now); d.setDate(d.getDate() + plusDays); return isoDate(d) }
 export function getDemoPayload(now = new Date()) {
   const key = isoDate(now)
   return {
@@ -48,11 +53,25 @@ export function getDemoPayload(now = new Date()) {
     brief: null,
     days: {
       [key]: [
-        { id: 'd_standup', title: 'Daily standup', start: at(now, 9, 30), end: at(now, 9, 45), joinUrl: 'https://zoom.us/j/0', attendees: [{ email: 'you', self: true }, { email: 'a' }, { email: 'b' }, { email: 'c' }, { email: 'd' }, { email: 'e' }] },
-        { id: 'd_design', title: 'Design review', start: at(now, 11, 0), end: at(now, 11, 45), location: 'Room 3B', description: 'Doc: https://docs.example.com/v2', attendees: [{ email: 'you', self: true }, { email: 'l' }, { email: 'p' }, { email: 'e' }] },
-        { id: 'd_acme', title: 'Acme quarterly review', start: at(now, 15, 0), end: at(now, 16, 0), location: 'Conf A', movedFrom: '2:00', attendees: [{ email: 'you', self: true }, { email: 'c' }, { email: 'v' }] },
-        { id: 'd_1on1', title: '1:1 with Priya', start: at(now, 16, 30), end: at(now, 17, 0), joinUrl: 'https://meet.google.com/x', responseStatus: 'needsAction', attendees: [{ email: 'you', self: true, responseStatus: 'needsAction' }, { email: 'priya', organizer: true }] },
+        { id: 'd_standup', title: 'Daily standup', kind: 'meeting', start: at(now, 9, 30), end: at(now, 9, 45), joinUrl: 'https://zoom.us/j/0', attendees: [{ email: 'you', self: true }, { email: 'ana@acme.co', name: 'Ana' }, { email: 'ben@acme.co', name: 'Ben' }, { email: 'cy@acme.co' }, { email: 'dev@acme.co' }, { email: 'eve@acme.co' }] },
+        { id: 'd_design', title: 'Design review', kind: 'meeting', start: at(now, 11, 0), end: at(now, 11, 45), location: 'Room 3B', description: 'Doc: https://docs.example.com/v2', attendees: [{ email: 'you', self: true }, { email: 'lea@acme.co', name: 'Lea' }, { email: 'pat@acme.co' }, { email: 'eli@acme.co' }] },
+        { id: 'd_acme', title: 'Acme quarterly review', kind: 'meeting', start: at(now, 15, 0), end: at(now, 16, 0), location: 'Conf A', movedFrom: '2:00 PM', attendees: [{ email: 'you', self: true }, { email: 'cfo@acme.co', name: 'Casey' }, { email: 'vp@acme.co' }] },
+        { id: 'd_1on1', title: '1:1 with Priya', kind: 'meeting', start: at(now, 16, 30), end: at(now, 17, 0), joinUrl: 'https://meet.google.com/x', responseStatus: 'needsAction', attendees: [{ email: 'you', self: true, responseStatus: 'needsAction' }, { email: 'priya@acme.co', name: 'Priya', organizer: true }] },
       ],
+      // a browsable week so the calendar demo isn't a dead strip
+      [dayKey(now, 1)]: [
+        { id: 'd_focus', title: 'Focus block — roadmap doc', kind: 'reminder', start: at(now, 10, 0, 1), end: at(now, 12, 0, 1), attendees: [] },
+        { id: 'd_intro', title: 'Intro call — Northwind', kind: 'meeting', start: at(now, 14, 0, 1), end: at(now, 14, 30, 1), joinUrl: 'https://meet.google.com/y', attendees: [{ email: 'you', self: true }, { email: 'sam@northwind.io', name: 'Sam' }] },
+      ],
+      [dayKey(now, 2)]: [
+        { id: 'd_offsite', title: 'Team offsite', kind: 'reminder', allDay: true, start: dayKey(now, 2), end: dayKey(now, 3), attendees: [] },
+      ],
+      [dayKey(now, 3)]: [],
+      [dayKey(now, 4)]: [
+        { id: 'd_retro', title: 'Sprint retro', kind: 'meeting', start: at(now, 11, 30, 4), end: at(now, 12, 15, 4), joinUrl: 'https://zoom.us/j/1', attendees: [{ email: 'you', self: true }, { email: 'ana@acme.co', name: 'Ana' }, { email: 'ben@acme.co' }] },
+      ],
+      [dayKey(now, 5)]: [],
+      [dayKey(now, 6)]: [],
     },
     emailTasks: [
       { id: 'mail:sarah', title: 'Reply to Sarah re: contract', source: 'Email', meta: 'from Sarah Chen', due: '10am', urgent: true, bucket: 'overdue' },

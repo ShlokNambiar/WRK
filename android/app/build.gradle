@@ -1,10 +1,10 @@
 apply plugin: 'com.android.application'
 
 android {
-    namespace = "life.pepl.wrk"
+    namespace = "com.metis.wrk"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "life.pepl.wrk"
+        applicationId "com.metis.wrk"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

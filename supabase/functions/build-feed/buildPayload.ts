@@ -4,12 +4,16 @@
 // PRIVACY INVARIANT: this module only ever receives calendar metadata and
 // email *headers* (subject + sender). It must never copy an email body/snippet
 // into its output. Tests assert this.
+import { senderAddress } from './emailFilter.ts'
 
 export type FeedEvent = {
   id: string
   title: string
+  // For all-day events start/end are the raw YYYY-MM-DD date strings; timed
+  // events carry full RFC3339 dateTimes. The client renders them separately.
   start: string
   end: string
+  allDay: boolean
   location: string | null
   joinUrl: string | null
   description: string | null
@@ -18,7 +22,7 @@ export type FeedEvent = {
   // focus/OOO block, or a solo timed item. Only meetings count toward the
   // "meetings" stat, though reminders still show on the calendar.
   kind: 'meeting' | 'reminder'
-  attendees: { email: string; self: boolean; organizer: boolean; responseStatus: string | null }[]
+  attendees: { email: string; name: string | null; self: boolean; organizer: boolean; responseStatus: string | null }[]
 }
 
 export type EmailTask = {
@@ -29,6 +33,9 @@ export type EmailTask = {
   due: string
   urgent?: boolean
   bucket: 'overdue' | 'today' | 'week'
+  // bare sender address — lets the app offer "mute this sender" (writes an
+  // email_rules row) and deep-link back to the thread in Gmail
+  sender: string
 }
 
 export type Brief = {
@@ -57,7 +64,7 @@ type GCalItem = {
   conferenceData?: { entryPoints?: { entryPointType?: string; uri?: string }[] }
   start?: { dateTime?: string; date?: string }
   end?: { dateTime?: string; date?: string }
-  attendees?: { email?: string; self?: boolean; organizer?: boolean; responseStatus?: string }[]
+  attendees?: { email?: string; displayName?: string; self?: boolean; organizer?: boolean; responseStatus?: string }[]
 }
 
 function joinUrlOf(item: GCalItem): string | null {
@@ -92,6 +99,9 @@ export function buildEvents(raw: { items?: GCalItem[] } | undefined | null): Fee
       title: it.summary || '(no title)',
       start: it.start?.dateTime ?? it.start?.date ?? '',
       end: it.end?.dateTime ?? it.end?.date ?? '',
+      // all-day = date-only start (no dateTime); keeps the raw date string so
+      // the client never renders it as a midnight/5:30 AM "meeting"
+      allDay: !!(it.start?.date && !it.start?.dateTime),
       location: it.location ?? null,
       joinUrl,
       description: it.description ?? null,
@@ -99,6 +109,7 @@ export function buildEvents(raw: { items?: GCalItem[] } | undefined | null): Fee
       kind: classifyKind(it, joinUrl),
       attendees: (it.attendees ?? []).map((a) => ({
         email: a.email ?? '',
+        name: a.displayName ?? null,
         self: a.self ?? false,
         organizer: a.organizer ?? false,
         responseStatus: a.responseStatus ?? null,
@@ -121,6 +132,9 @@ function senderName(from: string | undefined): string {
   return from.split('@')[0]
 }
 
+// Deterministic urgency cue in the subject line — feeds the "flagged" stat.
+const URGENT_SUBJECT = /\b(urgent|asap|action required|deadline|eod|by (today|tomorrow|end of day)|overdue|final notice|reminder:)\b/i
+
 export function buildEmailTasks(raw: { messages?: GmailMsg[] } | undefined | null): EmailTask[] {
   const messages = raw?.messages ?? []
   return messages.slice(0, 6).map((m) => {
@@ -131,7 +145,9 @@ export function buildEmailTasks(raw: { messages?: GmailMsg[] } | undefined | nul
       source: 'Email' as const,
       meta: 'from ' + senderName(m.from),
       due: 'today',
+      urgent: URGENT_SUBJECT.test(subject),
       bucket: 'today' as const,
+      sender: senderAddress(m.from),
     }
   })
 }
@@ -168,20 +184,111 @@ export function templateBrief(events: { kind?: string }[], emailTasks: { urgent?
   return { runs, stats, text: (lead + tail).trim() }
 }
 
+// --- 7-day grouping ---
+// en-CA gives YYYY-MM-DD — the day-key format the client indexes by.
+export function dayKeyInTz(now: Date, tz: string): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now)
+}
+
+// Group the week's events into a days map keyed by the LOCAL date of each
+// event's start. ALL 7 keys (today .. today+6) are always present — an empty
+// array means a genuinely free day (the client uses non-empty length for its
+// "has events" dots). Multi-day events live under their start date only; an
+// already-running event that started before today is shown under today so an
+// ongoing block (e.g. a vacation) doesn't vanish from the feed.
+export function groupEventsByDay(events: FeedEvent[], now: Date, tz: string): Record<string, FeedEvent[]> {
+  // 7 consecutive calendar dates starting at the user's local today. Stepping
+  // whole UTC dates (not now + n*24h) keeps the keys distinct across DST shifts.
+  const keys: string[] = []
+  const cursor = new Date(dayKeyInTz(now, tz) + 'T00:00:00Z')
+  for (let i = 0; i < 7; i++) {
+    keys.push(cursor.toISOString().slice(0, 10))
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+  const days: Record<string, FeedEvent[]> = Object.fromEntries(keys.map((k) => [k, []]))
+  for (const ev of events) {
+    // all-day starts are already local YYYY-MM-DD; timed starts get converted
+    const key = ev.allDay ? ev.start.slice(0, 10) : ev.start ? dayKeyInTz(new Date(ev.start), tz) : keys[0]
+    if (days[key]) days[key].push(ev)
+    else if (key < keys[0]) days[keys[0]].push(ev) // started before today, still running
+    // starts past the window (shouldn't happen — the fetch is bounded) are dropped
+  }
+  // buildEvents sorts globally, but the started-before-today clamp can prepend
+  // out of order — keep each day sorted by start.
+  for (const k of keys) days[k].sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0))
+  return days
+}
+
+// --- movedFrom diff against the previous feed ---
+// "h:mm AM/PM" in the user's tz, e.g. "3:00 PM" — what the client shows as
+// "moved from 3:00 PM".
+function clockTime(iso: string, tz: string): string {
+  return new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: 'numeric', minute: '2-digit', hour12: true })
+    .format(new Date(iso))
+    .replace(/\u202f/g, ' ') // newer ICU uses a narrow no-break space before AM/PM
+}
+
+// Mark events whose start changed since the previous build. Looks the event id
+// up across ALL days of the old payload (a move can cross days). Only timed →
+// timed changes count: all-day events have no clock time to have "moved from".
+// Mutates nothing — returns new event objects where movedFrom is set.
+export function applyMovedFrom(events: FeedEvent[], oldPayload: FeedPayload | null | undefined, tz: string): FeedEvent[] {
+  const oldById = new Map<string, FeedEvent>()
+  for (const day of Object.values(oldPayload?.days ?? {})) {
+    for (const ev of day) oldById.set(ev.id, ev)
+  }
+  return events.map((ev) => {
+    const old = oldById.get(ev.id)
+    if (!old || ev.allDay || old.allDay) return ev
+    // guard: older payloads predate the allDay flag, so also require a real
+    // dateTime (all-day starts are bare dates with no 'T')
+    if (!old.start?.includes('T') || !ev.start.includes('T')) return ev
+    if (Date.parse(old.start) === Date.parse(ev.start)) return ev
+    return { ...ev, movedFrom: clockTime(old.start, tz) }
+  })
+}
+
+// --- hourly cron: who is due right now? ---
+// The hourly job fires at minute 0 every hour; a user builds when their CURRENT
+// LOCAL HOUR (from profiles.tz) equals their chosen brief_hour. Pure so it's
+// unit-testable with fake clocks.
+export function usersDueNow<T extends { tz: string; brief_hour: number }>(users: T[], now: Date): T[] {
+  return users.filter((u) => {
+    let hour: number
+    try {
+      hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: u.tz, hour: '2-digit', hourCycle: 'h23' }).format(now))
+    } catch {
+      // corrupt tz string: fall back to the app default rather than never building
+      hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', hourCycle: 'h23' }).format(now))
+    }
+    return hour === u.brief_hour
+  })
+}
+
+// --- user-invoked rebuild rate limit ---
+// One rebuild per 10 minutes. Returns 0 when allowed, else the number of whole
+// seconds until the window reopens (the 429 retryAfter value).
+export const REBUILD_WINDOW_MS = 10 * 60 * 1000
+export function rateLimitRetryAfter(updatedAt: string | null | undefined, now: Date, windowMs = REBUILD_WINDOW_MS): number {
+  if (!updatedAt) return 0
+  const elapsed = now.getTime() - Date.parse(updatedAt)
+  if (Number.isNaN(elapsed) || elapsed >= windowMs) return 0
+  return Math.ceil((windowMs - elapsed) / 1000)
+}
+
 // --- Final assembly ---
 export function assemblePayload(args: {
   profile: { name: string; email: string; avatarUrl: string | null }
   brief: Brief | null
-  events: FeedEvent[]
+  days: Record<string, FeedEvent[]>
   emailTasks: EmailTask[]
-  today: string
   now: Date
 }): FeedPayload {
   return {
     generatedAt: args.now.toISOString(),
     profile: args.profile,
     brief: args.brief,
-    days: { [args.today]: args.events },
+    days: args.days,
     emailTasks: args.emailTasks,
   }
 }

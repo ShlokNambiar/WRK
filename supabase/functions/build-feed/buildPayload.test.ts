@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildEvents, buildEmailTasks, templateBrief, assemblePayload, computeStats } from './buildPayload.ts'
+import { buildEvents, buildEmailTasks, templateBrief, assemblePayload, computeStats, groupEventsByDay, applyMovedFrom, dayKeyInTz, usersDueNow, rateLimitRetryAfter } from './buildPayload.ts'
 
 // ---- buildEvents: Google Calendar events.list -> FeedEvent[] ----
 test('buildEvents maps a timed event with all fields', () => {
@@ -13,7 +13,7 @@ test('buildEvents maps a timed event with all fields', () => {
       hangoutLink: 'https://meet.google.com/abc',
       start: { dateTime: '2026-07-01T11:00:00+05:30' },
       end: { dateTime: '2026-07-01T11:45:00+05:30' },
-      attendees: [{ email: 'you@x.com', self: true, responseStatus: 'accepted' }],
+      attendees: [{ email: 'you@x.com', displayName: 'You Yourself', self: true, responseStatus: 'accepted' }],
     }],
   }
   const evs = buildEvents(raw)
@@ -23,13 +23,50 @@ test('buildEvents maps a timed event with all fields', () => {
     title: 'Design review',
     start: '2026-07-01T11:00:00+05:30',
     end: '2026-07-01T11:45:00+05:30',
+    allDay: false,
     location: 'Room 3B',
     joinUrl: 'https://meet.google.com/abc',
     description: 'agenda',
     movedFrom: null,
     kind: 'meeting', // has a join link
-    attendees: [{ email: 'you@x.com', self: true, organizer: false, responseStatus: 'accepted' }],
+    attendees: [{ email: 'you@x.com', name: 'You Yourself', self: true, organizer: false, responseStatus: 'accepted' }],
   })
+})
+
+test('buildEvents keeps location even when the event has a joinUrl', () => {
+  const raw = { items: [{
+    id: 'hy', summary: 'Hybrid standup', location: 'Room 4A',
+    hangoutLink: 'https://meet.google.com/hy',
+    start: { dateTime: '2026-07-01T09:00:00+05:30' }, end: { dateTime: '2026-07-01T09:15:00+05:30' },
+  }] }
+  const ev = buildEvents(raw)[0]
+  assert.equal(ev.joinUrl, 'https://meet.google.com/hy')
+  assert.equal(ev.location, 'Room 4A') // physical room survives alongside the link
+})
+
+test('buildEvents attendee name is null when Google sends no displayName', () => {
+  const raw = { items: [{
+    id: 'n', summary: 'Sync',
+    start: { dateTime: '2026-07-01T10:00:00Z' }, end: { dateTime: '2026-07-01T10:30:00Z' },
+    attendees: [{ email: 'priya@x.com' }],
+  }] }
+  assert.deepEqual(buildEvents(raw)[0].attendees[0], {
+    email: 'priya@x.com', name: null, self: false, organizer: false, responseStatus: null,
+  })
+})
+
+// ---- allDay flag: date-only start, raw date strings kept ----
+test('buildEvents sets allDay=true for date-only events and keeps the raw dates', () => {
+  const raw = { items: [{ id: 'a', summary: 'Pay rent', start: { date: '2026-07-01' }, end: { date: '2026-07-02' } }] }
+  const ev = buildEvents(raw)[0]
+  assert.equal(ev.allDay, true)
+  assert.equal(ev.start, '2026-07-01') // raw date string, no fake midnight time
+  assert.equal(ev.end, '2026-07-02')
+})
+
+test('buildEvents sets allDay=false for timed events', () => {
+  const raw = { items: [{ id: 't', summary: 'Call', start: { dateTime: '2026-07-01T10:00:00Z' }, end: { dateTime: '2026-07-01T10:30:00Z' } }] }
+  assert.equal(buildEvents(raw)[0].allDay, false)
 })
 
 // ---- buildEvents: meeting vs reminder classification ----
@@ -138,6 +175,41 @@ test('buildEmailTasks is a pure mapper and caps at 6 (filtering happens upstream
   assert.equal(buildEmailTasks(many).length, 6)
 })
 
+// ---- urgent flag: deterministic subject-line cues feed the "flagged" stat ----
+test('buildEmailTasks flags urgent subjects', () => {
+  const hits = [
+    'URGENT: server down',
+    'Please review ASAP',
+    'Action required: verify your account',
+    'Deadline moved to Friday',
+    'Need this by EOD',
+    'Send the deck by tomorrow',
+    'Invoice overdue',
+    'Final notice from finance',
+  ]
+  const tasks = buildEmailTasks({ messages: hits.map((subject, i) => ({ threadId: 't' + i, subject, from: 'a@b.com' })) })
+  for (const t of tasks.slice(0, 6)) assert.equal(t.urgent, true, t.title)
+})
+
+test('buildEmailTasks does not flag ordinary subjects', () => {
+  const misses = [
+    'Lunch plans?',
+    'Q3 numbers',
+    'Weekly digest',
+    'Working urgently on the fix', // "urgently" is not a \burgent\b match
+  ]
+  const tasks = buildEmailTasks({ messages: misses.map((subject, i) => ({ threadId: 't' + i, subject, from: 'a@b.com' })) })
+  for (const t of tasks) assert.equal(t.urgent, false, t.title)
+})
+
+test('urgent tasks flow into the flagged stat', () => {
+  const tasks = buildEmailTasks({ messages: [
+    { threadId: 't1', subject: 'URGENT: sign this', from: 'a@b.com' },
+    { threadId: 't2', subject: 'Lunch?', from: 'a@b.com' },
+  ] })
+  assert.deepEqual(computeStats([], tasks)[2], { n: '1', label: 'flagged' })
+})
+
 // ---- templateBrief: deterministic, no AI ----
 test('templateBrief builds 3 stats: meetings / to do / flagged (meetings by kind)', () => {
   const events = [{ id: '1', kind: 'meeting' }, { id: '2', kind: 'meeting' }, { id: '3', kind: 'reminder' }]
@@ -161,18 +233,174 @@ test('templateBrief handles an empty day', () => {
   ])
 })
 
+// ---- groupEventsByDay: the 7-day map keyed by LOCAL date ----
+const IST = 'Asia/Kolkata'
+const NOW = new Date('2026-07-01T01:00:00Z') // 06:30 IST on 2026-07-01
+
+test('groupEventsByDay always emits all 7 keys, empty array = free day', () => {
+  const days = groupEventsByDay([], NOW, IST)
+  assert.deepEqual(Object.keys(days), [
+    '2026-07-01', '2026-07-02', '2026-07-03', '2026-07-04', '2026-07-05', '2026-07-06', '2026-07-07',
+  ])
+  for (const k of Object.keys(days)) assert.deepEqual(days[k], [])
+})
+
+test('groupEventsByDay keys by the LOCAL date of the start, not the UTC date', () => {
+  // 20:30Z on Jul 1 is already 02:00 IST on Jul 2
+  const events = buildEvents({ items: [
+    { id: 'utc', summary: 'Late call', start: { dateTime: '2026-07-01T20:30:00Z' }, end: { dateTime: '2026-07-01T21:00:00Z' } },
+  ] })
+  const days = groupEventsByDay(events, NOW, IST)
+  assert.deepEqual(days['2026-07-01'], [])
+  assert.equal(days['2026-07-02'].length, 1)
+  assert.equal(days['2026-07-02'][0].id, 'utc')
+})
+
+test('groupEventsByDay puts a multi-day all-day event under its start date only', () => {
+  const events = buildEvents({ items: [
+    { id: 'trip', summary: 'Offsite', start: { date: '2026-07-03' }, end: { date: '2026-07-06' } },
+  ] })
+  const days = groupEventsByDay(events, NOW, IST)
+  assert.equal(days['2026-07-03'].length, 1)
+  assert.deepEqual(days['2026-07-04'], []) // never duplicated onto later days
+  assert.deepEqual(days['2026-07-05'], [])
+})
+
+test('groupEventsByDay shows an event that started before today under today', () => {
+  const events = buildEvents({ items: [
+    { id: 'vac', summary: 'Vacation', start: { date: '2026-06-29' }, end: { date: '2026-07-03' } },
+  ] })
+  const days = groupEventsByDay(events, NOW, IST)
+  assert.equal(days['2026-07-01'][0].id, 'vac') // ongoing block doesn't vanish
+})
+
+test('groupEventsByDay keeps each day sorted by start', () => {
+  const events = buildEvents({ items: [
+    { id: 'b', summary: 'Later', start: { dateTime: '2026-07-02T15:00:00+05:30' }, end: { dateTime: '2026-07-02T16:00:00+05:30' } },
+    { id: 'a', summary: 'Earlier', start: { dateTime: '2026-07-02T09:00:00+05:30' }, end: { dateTime: '2026-07-02T10:00:00+05:30' } },
+  ] })
+  const days = groupEventsByDay(events, NOW, IST)
+  assert.deepEqual(days['2026-07-02'].map((e) => e.id), ['a', 'b'])
+})
+
+test('dayKeyInTz gives the local YYYY-MM-DD', () => {
+  assert.equal(dayKeyInTz(NOW, IST), '2026-07-01')
+  assert.equal(dayKeyInTz(new Date('2026-07-01T20:00:00Z'), IST), '2026-07-02')
+})
+
+// ---- stats describe TODAY only, even though the payload holds a week ----
+test('computeStats over the today slice ignores the rest of the week', () => {
+  const events = buildEvents({ items: [
+    { id: 'today', summary: 'Today mtg', hangoutLink: 'https://meet.google.com/1',
+      start: { dateTime: '2026-07-01T10:00:00+05:30' }, end: { dateTime: '2026-07-01T10:30:00+05:30' } },
+    { id: 'later', summary: 'Thursday mtg', hangoutLink: 'https://meet.google.com/2',
+      start: { dateTime: '2026-07-02T10:00:00+05:30' }, end: { dateTime: '2026-07-02T10:30:00+05:30' } },
+  ] })
+  const days = groupEventsByDay(events, NOW, IST)
+  const stats = computeStats(days[dayKeyInTz(NOW, IST)], [])
+  assert.deepEqual(stats[0], { n: '1', label: 'meetings' }) // not 2
+})
+
+// ---- applyMovedFrom: diff against the previous feed's days ----
+function payloadWith(days: Record<string, any[]>) {
+  return { generatedAt: '', profile: { name: '', email: '', avatarUrl: null }, brief: null, days, emailTasks: [] } as any
+}
+const mkEvent = (id: string, start: string, allDay = false) => ({
+  id, title: id, start, end: start, allDay, location: null, joinUrl: null,
+  description: null, movedFrom: null, kind: 'meeting' as const, attendees: [],
+})
+
+test('applyMovedFrom sets the old local time when a timed event moved', () => {
+  const oldPayload = payloadWith({ '2026-07-01': [mkEvent('e1', '2026-07-01T15:00:00+05:30')] })
+  const [ev] = applyMovedFrom([mkEvent('e1', '2026-07-01T17:30:00+05:30')], oldPayload, IST)
+  assert.equal(ev.movedFrom, '3:00 PM')
+})
+
+test('applyMovedFrom finds the old event under ANY previous day (cross-day move)', () => {
+  const oldPayload = payloadWith({ '2026-07-01': [], '2026-07-02': [mkEvent('e1', '2026-07-02T09:00:00+05:30')] })
+  const [ev] = applyMovedFrom([mkEvent('e1', '2026-07-01T11:00:00+05:30')], oldPayload, IST)
+  assert.equal(ev.movedFrom, '9:00 AM')
+})
+
+test('applyMovedFrom leaves an unmoved event alone', () => {
+  const oldPayload = payloadWith({ '2026-07-01': [mkEvent('e1', '2026-07-01T15:00:00+05:30')] })
+  const [ev] = applyMovedFrom([mkEvent('e1', '2026-07-01T15:00:00+05:30')], oldPayload, IST)
+  assert.equal(ev.movedFrom, null)
+})
+
+test('applyMovedFrom leaves a brand-new event alone', () => {
+  const oldPayload = payloadWith({ '2026-07-01': [mkEvent('other', '2026-07-01T15:00:00+05:30')] })
+  const [ev] = applyMovedFrom([mkEvent('e1', '2026-07-01T17:00:00+05:30')], oldPayload, IST)
+  assert.equal(ev.movedFrom, null)
+})
+
+test('applyMovedFrom never marks all-day events (no clock time to move from)', () => {
+  const oldPayload = payloadWith({ '2026-07-01': [mkEvent('e1', '2026-07-01', true)] })
+  const [ev] = applyMovedFrom([mkEvent('e1', '2026-07-03', true)], oldPayload, IST)
+  assert.equal(ev.movedFrom, null)
+})
+
+test('applyMovedFrom handles a missing previous payload', () => {
+  const [ev] = applyMovedFrom([mkEvent('e1', '2026-07-01T17:00:00+05:30')], null, IST)
+  assert.equal(ev.movedFrom, null)
+})
+
+// ---- usersDueNow: hourly cron picks users whose local hour == brief_hour ----
+test('usersDueNow matches users by their CURRENT LOCAL hour', () => {
+  // 01:30 UTC = 07:00 IST (+05:30) on Jul 1 and 21:30 EDT (-04:00) on Jun 30
+  const at = new Date('2026-07-01T01:30:00Z')
+  const users = [
+    { user_id: 'a', tz: 'Asia/Kolkata', brief_hour: 7 },      // 07:00 IST -> due
+    { user_id: 'b', tz: 'Asia/Kolkata', brief_hour: 8 },      // 07:00 IST -> not due
+    { user_id: 'c', tz: 'America/New_York', brief_hour: 21 }, // 21:30 EDT -> due
+    { user_id: 'd', tz: 'America/New_York', brief_hour: 7 },  // 21:30 EDT -> not due
+  ]
+  assert.deepEqual(usersDueNow(users, at).map((u) => u.user_id), ['a', 'c'])
+})
+
+test('usersDueNow handles midnight (hour 0), not confusing it with 24', () => {
+  const at = new Date('2026-07-01T00:30:00Z') // 00:30 UTC
+  const users = [{ user_id: 'z', tz: 'UTC', brief_hour: 0 }]
+  assert.deepEqual(usersDueNow(users, at).map((u) => u.user_id), ['z'])
+})
+
+test('usersDueNow falls back to the app-default tz on a corrupt tz string', () => {
+  const at = new Date('2026-07-01T01:30:00Z') // 07:00 IST
+  const users = [{ user_id: 'x', tz: 'Not/AZone', brief_hour: 7 }]
+  assert.deepEqual(usersDueNow(users, at).map((u) => u.user_id), ['x'])
+})
+
+// ---- rateLimitRetryAfter: one user-invoked rebuild per 10 minutes ----
+test('rateLimitRetryAfter allows when there is no previous build', () => {
+  assert.equal(rateLimitRetryAfter(null, new Date('2026-07-01T10:00:00Z')), 0)
+})
+
+test('rateLimitRetryAfter blocks inside the window with seconds remaining', () => {
+  const now = new Date('2026-07-01T10:09:00Z') // 9 min after the last build
+  assert.equal(rateLimitRetryAfter('2026-07-01T10:00:00Z', now), 60)
+})
+
+test('rateLimitRetryAfter boundary: exactly 10 minutes later is allowed', () => {
+  const now = new Date('2026-07-01T10:10:00.000Z')
+  assert.equal(rateLimitRetryAfter('2026-07-01T10:00:00Z', now), 0)
+  // 1ms before the boundary is still blocked (rounds up to a whole second)
+  assert.equal(rateLimitRetryAfter('2026-07-01T10:00:00Z', new Date('2026-07-01T10:09:59.999Z')), 1)
+})
+
 // ---- assemblePayload: the final feed; raw content must never appear ----
-test('assemblePayload produces the documented shape under today key', () => {
-  const events = buildEvents({ items: [{ id: 'e', summary: 'M', start: { dateTime: '2026-07-01T10:00:00Z' }, end: { dateTime: '2026-07-01T10:30:00Z' } }] })
+test('assemblePayload produces the documented multi-day shape', () => {
+  const events = buildEvents({ items: [{ id: 'e', summary: 'M', start: { dateTime: '2026-07-01T10:00:00+05:30' }, end: { dateTime: '2026-07-01T10:30:00+05:30' } }] })
   const emailTasks = buildEmailTasks(gmailRaw)
-  const brief = templateBrief(events, emailTasks)
+  const days = groupEventsByDay(events, NOW, IST)
+  const brief = templateBrief(days['2026-07-01'], emailTasks)
   const payload = assemblePayload({
     profile: { name: 'Shlok', email: 's@x.com', avatarUrl: null },
-    brief, events, emailTasks, today: '2026-07-01', now: new Date('2026-07-01T01:00:00Z'),
+    brief, days, emailTasks, now: NOW,
   })
   assert.equal(payload.profile.name, 'Shlok')
-  assert.ok(payload.days['2026-07-01'])
+  assert.equal(Object.keys(payload.days).length, 7)
   assert.equal(payload.days['2026-07-01'].length, 1)
+  assert.deepEqual(payload.days['2026-07-02'], [])
   assert.equal(payload.generatedAt, '2026-07-01T01:00:00.000Z')
   assert.ok(payload.brief)
   // privacy invariant: no raw email body anywhere in the stored feed

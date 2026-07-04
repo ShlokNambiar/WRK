@@ -14,6 +14,8 @@ Given today's meetings, reminders/blocks, and the emails that need a reply, resp
 - stats: exactly three, in this order: meetings (count of actual MEETINGS only — never count reminders/blocks as meetings), to do (email-task count), flagged (urgent email-task count).
 - text: the same brief as a single plain string.
 - Reminders/blocks are personal items, not meetings — you may mention them, but never describe them as meetings.
+- NEVER open with a time-of-day greeting (no "Good morning", "Good afternoon", "Good evening" — the brief may be read at any hour). Start directly with the substance of the day.
+- ALWAYS include am/pm on any time you mention (e.g. "3:00 pm", never "3:00").
 Keep it human and brief. Never invent events or emails that were not provided.`
 
 export function userContent(events: FeedEvent[], emailTasks: EmailTask[]): string {

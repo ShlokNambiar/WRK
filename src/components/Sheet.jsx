@@ -2,8 +2,9 @@ import { useEffect } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { C } from '../theme.js'
 
-// Bottom sheet: scrim + spring-up panel. Controlled via `open`.
-export default function Sheet({ open, onClose, children, reduced }) {
+// Bottom sheet: scrim + spring-up panel. Controlled via `open`. Dismisses on
+// scrim tap, Escape, or a real swipe-down (the grabber isn't decorative).
+export default function Sheet({ open, onClose, label = 'Sheet', children, reduced }) {
   // Escape to close + restore focus to whatever was focused before opening.
   useEffect(() => {
     if (!open) return
@@ -33,12 +34,23 @@ export default function Sheet({ open, onClose, children, reduced }) {
             onClick={(e) => e.stopPropagation()}
             style={{
               position: 'absolute', left: 0, right: 0, bottom: 0, background: C.paper,
-              borderRadius: '32px 32px 0 0', padding: '14px 20px calc(24px + env(safe-area-inset-bottom))',
+              borderRadius: '32px 32px 0 0', padding: '0 20px calc(24px + env(safe-area-inset-bottom))',
               boxShadow: '0 -22px 54px rgba(0,0,0,.32)', maxHeight: '88%', overflowY: 'auto',
             }}
-            role="dialog" aria-modal="true"
+            role="dialog" aria-modal="true" aria-label={label}
           >
-            <div style={{ width: 42, height: 5, borderRadius: 3, background: '#dad9d2', margin: '0 auto 16px' }} />
+            {/* grabber zone owns swipe-down-to-dismiss (drag on the whole panel
+                would fight the panel's own scrolling) */}
+            <div
+              onTouchStart={(e) => { e.currentTarget._y0 = e.touches[0].clientY }}
+              onTouchEnd={(e) => {
+                const y0 = e.currentTarget._y0
+                if (y0 != null && e.changedTouches[0].clientY - y0 > 60) onClose?.()
+              }}
+              style={{ padding: '14px 0 16px', touchAction: 'none', cursor: 'grab' }}
+            >
+              <div aria-hidden="true" style={{ width: 42, height: 5, borderRadius: 3, background: '#dad9d2', margin: '0 auto' }} />
+            </div>
             {children}
           </motion.div>
         </motion.div>

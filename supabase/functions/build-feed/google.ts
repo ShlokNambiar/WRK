@@ -12,7 +12,8 @@ export class TokenRevokedError extends Error {
 
 type FetchFn = typeof fetch
 
-// --- pure: today's [start,end) in the user's timezone as RFC3339 with offset ---
+// --- pure: the 7-day [today 00:00, today+7 00:00) window in the user's
+// timezone as RFC3339 with offset ---
 function offsetFor(now: Date, tz: string): string {
   const s = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'longOffset' })
     .formatToParts(now)
@@ -26,11 +27,11 @@ function dateInTz(now: Date, tz: string): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now)
 }
 
-export function todayBounds(now: Date, tz: string): { date: string; timeMin: string; timeMax: string } {
+export function weekBounds(now: Date, tz: string): { date: string; timeMin: string; timeMax: string } {
   const date = dateInTz(now, tz)
   const offset = offsetFor(now, tz)
   const next = new Date(date + 'T00:00:00Z')
-  next.setUTCDate(next.getUTCDate() + 1)
+  next.setUTCDate(next.getUTCDate() + 7)
   const nextDate = next.toISOString().slice(0, 10)
   return {
     date,
@@ -65,20 +66,20 @@ export async function mintAccessToken(
   return data.access_token as string
 }
 
-// --- read-only Calendar: today's events on the primary calendar ---
-export async function fetchTodayEvents(
+// --- read-only Calendar: the next 7 days on the primary calendar ---
+export async function fetchWeekEvents(
   accessToken: string,
   tz: string,
   now: Date,
   fetchFn: FetchFn = fetch,
 ): Promise<{ items?: unknown[] }> {
-  const { timeMin, timeMax } = todayBounds(now, tz)
+  const { timeMin, timeMax } = weekBounds(now, tz)
   const qs = new URLSearchParams({
     timeMin,
     timeMax,
     singleEvents: 'true',
     orderBy: 'startTime',
-    maxResults: '50',
+    maxResults: '250', // a full week of expanded recurrences can be large
     timeZone: tz,
   })
   const res = await fetchFn(

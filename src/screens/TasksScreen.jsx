@@ -6,8 +6,8 @@ import { Empty } from './HomeScreen.jsx'
 import { useMeasuredHeight } from '../hooks/useMeasuredHeight.js'
 import { C, FONT_SERIF, FONT_SANS } from '../theme.js'
 
-export default function TasksScreen({ day, mobile, reduced, openEdit }) {
-  const { grouped, toggleTask } = day
+export default function TasksScreen({ day, mobile, reduced, openEdit, openTaskDetail, onSnack }) {
+  const { grouped, toggleTask, clearCompleted } = day
   const [filter, setFilter] = useState('open')
   const headerTop = mobile ? 'calc(14px + env(safe-area-inset-top))' : '54px'
   const [headerRef, headerH] = useMeasuredHeight()
@@ -15,7 +15,7 @@ export default function TasksScreen({ day, mobile, reduced, openEdit }) {
   const openCount = grouped.overdue.length + grouped.today.length + grouped.week.length
   const chips = [
     { key: 'open', label: `Open · ${openCount}` },
-    { key: 'today', label: 'Today' },
+    { key: 'today', label: `Today · ${grouped.today.length}` },
     { key: 'done', label: `Done · ${grouped.done.length}` },
   ]
 
@@ -26,6 +26,7 @@ export default function TasksScreen({ day, mobile, reduced, openEdit }) {
       : [['Overdue', grouped.overdue], ['Today', grouped.today], ['This week', grouped.week]]
 
   const total = sections.reduce((n, [, list]) => n + list.length, 0)
+  const doneManualCount = grouped.done.filter((t) => t.source === 'You').length
 
   return (
     <>
@@ -39,9 +40,9 @@ export default function TasksScreen({ day, mobile, reduced, openEdit }) {
           {chips.map((c) => {
             const on = filter === c.key
             return (
-              <Pressable key={c.key} onPress={() => setFilter(c.key)}
+              <Pressable key={c.key} onPress={() => setFilter(c.key)} ariaPressed={on}
                 style={{
-                  flex: 'none', padding: '7px 14px', borderRadius: 14, fontSize: 12.5, fontWeight: 600,
+                  flex: 'none', padding: '10px 14px', borderRadius: 14, fontSize: 12.5, fontWeight: 600, minHeight: 40,
                   background: on ? C.blue : '#fff', color: on ? '#fff' : '#4a4a44',
                   boxShadow: on ? '0 4px 12px rgba(26,24,240,.28)' : '0 2px 8px rgba(0,0,0,.05)',
                 }}>{c.label}</Pressable>
@@ -55,7 +56,7 @@ export default function TasksScreen({ day, mobile, reduced, openEdit }) {
         top: headerH || (mobile ? 'calc(164px + env(safe-area-inset-top))' : 168),
         overflowY: 'auto', padding: '6px 22px 0',
       }}>
-        {total === 0 && <Empty text="No tasks here. Enjoy the calm." />}
+        {total === 0 && <Empty text={filter === 'done' ? 'Nothing done yet today.' : 'No tasks here. Enjoy the calm.'} />}
         {sections.map(([label, list]) => {
           if (list.length === 0) return null
           const fixed = list.filter((t) => t.source !== 'You')
@@ -65,7 +66,7 @@ export default function TasksScreen({ day, mobile, reduced, openEdit }) {
               <div style={{ fontSize: 11.5, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', color: C.muted, margin: '16px 0 11px', fontFamily: FONT_SANS }}>{label}</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {fixed.map((t) => (
-                  <TaskRow key={t.id} task={t} onToggle={toggleTask} onEdit={openEdit} reduced={reduced} />
+                  <TaskRow key={t.id} task={t} onToggle={toggleTask} onDetail={openTaskDetail} reduced={reduced} />
                 ))}
               </div>
               {manual.length > 0 && (
@@ -85,6 +86,12 @@ export default function TasksScreen({ day, mobile, reduced, openEdit }) {
             </div>
           )
         })}
+        {filter === 'done' && doneManualCount > 0 && (
+          <Pressable
+            onPress={() => { clearCompleted(); onSnack?.({ text: `Cleared ${doneManualCount} completed task${doneManualCount > 1 ? 's' : ''}` }) }}
+            style={{ margin: '18px auto 0', display: 'block', fontSize: 13, fontWeight: 600, color: C.muted, padding: '12px 18px', minHeight: 44 }}
+          >Clear completed</Pressable>
+        )}
         <div style={{ height: mobile ? 'calc(140px + env(safe-area-inset-bottom))' : 130 }} />
       </main>
     </>

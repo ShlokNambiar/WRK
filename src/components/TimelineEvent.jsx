@@ -1,9 +1,12 @@
 import { motion } from 'framer-motion'
 import AttendeeStack from './AttendeeStack.jsx'
+import Pressable from './Pressable.jsx'
+import { openUrl } from '../lib/openUrl.js'
 import { C, FONT_SANS } from '../theme.js'
 
-// A single event on a timeline (Home + Calendar). `ev` is a buildTimeline() row.
-export default function TimelineEvent({ ev, isLast, reduced }) {
+// A single event on a timeline (Home + Calendar). `ev` is a buildTimeline()
+// row. The card opens the event detail; Join launches the meeting link.
+export default function TimelineEvent({ ev, isLast, reduced, onOpen }) {
   const t = reduced ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 30 }
   const hi = ev.highlighted
   const timeColor = hi ? '#b06d0a' : C.ink
@@ -29,37 +32,54 @@ export default function TimelineEvent({ ev, isLast, reduced }) {
       </div>
 
       {/* card */}
-      <div style={{
-        flex: 1, minWidth: 0, background: hi ? '#fbecd2' : C.card, borderRadius: 16,
-        padding: '13px 15px', boxShadow: '0 4px 14px rgba(0,0,0,.05)',
-      }}>
+      <Pressable
+        onPress={onOpen ? () => onOpen(ev) : undefined}
+        ariaLabel={`${ev.title}, ${ev.durLabel}`}
+        style={{
+          flex: 1, minWidth: 0, background: hi ? '#fbecd2' : C.card, borderRadius: 16,
+          padding: '13px 15px', boxShadow: '0 4px 14px rgba(0,0,0,.05)',
+          textAlign: 'left', display: 'block',
+        }}
+      >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <div style={{ fontSize: 14.5, fontWeight: 600, color: hi ? '#7a4d04' : C.ink, fontFamily: FONT_SANS, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ev.title}</div>
           <span style={{ flex: 'none', fontSize: 10.5, fontWeight: 700, color: hi ? '#b06d0a' : ev.accent, background: hi ? '#fff' : hexA(ev.accent, 0.1), padding: '3px 8px', borderRadius: 8 }}>{ev.durLabel}</span>
         </div>
 
-        {/* second row */}
-        {ev.movedBadge ? (
+        {/* moved badge */}
+        {ev.movedBadge && (
           <div style={{ marginTop: 9 }}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 10.5, fontWeight: 700, color: '#b06d0a', background: '#fff', padding: '3px 8px', borderRadius: 8 }}>
               <Clock /> {ev.movedBadge.toUpperCase()}
             </span>
           </div>
-        ) : (ev.avatars.length || ev.joinUrl) ? (
+        )}
+
+        {/* people + join — a hybrid meeting shows its room too */}
+        {(ev.avatars.length > 0 || ev.joinUrl) && (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 11 }}>
             {ev.avatars.length ? <AttendeeStack avatars={ev.avatars} overflow={ev.overflow} /> : <span />}
             {ev.joinUrl && (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600, color: C.blue, background: '#eceaf9', padding: '6px 11px', borderRadius: 11 }}>
+              <Pressable
+                stop
+                onPress={() => openUrl(ev.joinUrl)}
+                ariaLabel={`Join ${ev.title}`}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600,
+                  color: C.blue, background: '#eceaf9', padding: '9px 13px', borderRadius: 11,
+                }}
+              >
                 <Video /> Join
-              </span>
+              </Pressable>
             )}
           </div>
-        ) : ev.location ? (
+        )}
+        {ev.location && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 9, color: C.muted, fontSize: 12.5 }}>
-            <Pin /> {ev.location}
+            <Pin /> <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ev.location}</span>
           </div>
-        ) : null}
-      </div>
+        )}
+      </Pressable>
     </motion.div>
   )
 }
