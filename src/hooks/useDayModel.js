@@ -83,8 +83,11 @@ export function useDayModel() {
   const [storageBroken, setStorageBroken] = useState(false)
   const [notifStatus, setNotifStatus] = useState('unavailable')
   const uidRef = useRef(0) // monotonic counter for unique manual-task ids
-  const doneRef = useRef({}) // mirror of doneById for reads inside stable callbacks
   const pushTimer = useRef(null)
+  // HQ write-back machinery (used by the hydration + done-diff effects below)
+  const prevDoneRef = useRef(null) // null = seeding (hydration); diff skipped
+  const dismissIntentRef = useRef(new Set())
+  const pendingHqRef = useRef({})
   const stateRef = useRef(null) // latest persisted state, for flush-on-background
   const activeUidRef = useRef(null)
   const autoBuiltRef = useRef(false)
@@ -93,7 +96,6 @@ export function useDayModel() {
 
   const sessionUserId = session?.user?.id || null
   const owner = sessionUserId || 'anon'
-  doneRef.current = doneById
 
   // auth: load the session, keep it in sync, and on Google consent push the
   // provider refresh token to the backend (with retries — a single failed POST
@@ -133,6 +135,7 @@ export function useDayModel() {
   useEffect(() => {
     if (!authReady) return
     setHydrated(null)
+    prevDoneRef.current = null // re-seed the done-diff for the new owner
     let sv = loadState(owner)
     if (sessionUserId && !sv) {
       const anonSv = loadState('anon')
@@ -143,6 +146,7 @@ export function useDayModel() {
     }
     const localDel = sv?.deletedIds || {}
     const hadLocal = !!sv
+    pendingHqRef.current = sv?.hqPending || {} // unfinished status write-backs
     setManualTasks((sv?.manualTasks || []).map(migrateTask))
     setDoneById(sv?.doneById || {})
     setDeletedIds(localDel)
@@ -250,18 +254,6 @@ export function useDayModel() {
     if (hydrated === owner && notifStatus === 'granted') scheduleDailyBrief(settings.briefTime)
   }, [hydrated, owner, notifStatus, settings.briefTime])
 
-  // Schedule local notifications for Claude-set reminders delivered in the
-  // feed (HQ mode); a completed/dismissed task's reminder is cancelled.
-  useEffect(() => {
-    if (notifStatus !== 'granted') return
-    for (const t of hqTasks) {
-      if (doneById[t.id]) { cancelTaskReminder(t.id); continue }
-      if (t.remindAt && new Date(t.remindAt) > new Date()) {
-        scheduleTaskReminder({ id: t.id, title: t.title, remindAt: t.remindAt })
-      }
-    }
-  }, [hqTasks, notifStatus, doneById])
-
   const todayKey = isoDate(now)
   const isToday = selectedDate === todayKey
 
@@ -309,6 +301,20 @@ export function useDayModel() {
     })), doneById),
     [autoTasks, emailTasks, hqTasks, manualTasks, doneById, now],
   )
+  // Schedule local notifications for Claude-set reminders delivered in the
+  // feed (HQ mode); a completed/dismissed task's reminder is cancelled.
+  // (This effect must live BELOW the hqTasks declaration — its dep array is
+  // evaluated during render, and a forward reference is a TDZ crash.)
+  useEffect(() => {
+    if (notifStatus !== 'granted') return
+    for (const t of hqTasks) {
+      if (doneById[t.id]) { cancelTaskReminder(t.id); continue }
+      if (t.remindAt && new Date(t.remindAt) > new Date()) {
+        scheduleTaskReminder({ id: t.id, title: t.title, remindAt: t.remindAt })
+      }
+    }
+  }, [hqTasks, notifStatus, doneById])
+
   const grouped = useMemo(() => groupTasks(tasks, now), [tasks, now])
   const timeline = useMemo(() => buildTimeline(selectedEvents, now), [selectedEvents, now])
   const todayTimeline = useMemo(
@@ -339,15 +345,18 @@ export function useDayModel() {
   useEffect(() => {
     if (hydrated !== owner) return
     const ids = new Set(tasks.map((t) => t.id))
+    // hq: must be in the keep-list: on cold start the persist effect can run
+    // before the feed loads (tasks has no hq ids yet) — pruning then would
+    // wipe completed-HQ state so a still-open row reappears unchecked.
     const keep = ([k, v]) =>
       ids.has(k) ||
-      ((k.startsWith('auto:') || k.startsWith('mail:')) &&
+      ((k.startsWith('auto:') || k.startsWith('mail:') || k.startsWith('hq:')) &&
         Date.now() - (typeof v === 'number' ? v : Date.now()) < RETENTION)
     const prunedDone = Object.fromEntries(Object.entries(doneById).filter(keep))
     const prunedDeleted = Object.fromEntries(
       Object.entries(deletedIds).filter(([, ts]) => Date.now() - ts < RETENTION),
     )
-    const state = { v: 5, manualTasks, doneById: prunedDone, deletedIds: prunedDeleted, settings }
+    const state = { v: 5, manualTasks, doneById: prunedDone, deletedIds: prunedDeleted, settings, hqPending: pendingHqRef.current }
     stateRef.current = state
     if (!saveState(owner, state)) setStorageBroken(true)
     // debounced cloud backup (signed-in only)
@@ -374,23 +383,59 @@ export function useDayModel() {
     return () => document.removeEventListener('visibilitychange', onHide)
   }, [flushPush])
 
-  // ---- task actions ----
-  const toggleTask = useCallback((id) => {
-    // Read the flip direction from current state, NOT inside the updater
-    // (updaters must stay pure — StrictMode runs them twice).
-    const nowDone = !doneRef.current[id]
-    setDoneById((d) => {
-      const next = { ...d }
-      // store the completion time (not just `true`) so off-day auto/email done
-      // entries can be aged out during persist instead of accumulating forever.
-      if (next[id]) delete next[id]
-      else next[id] = Date.now()
-      return next
+  // ---- HQ status write-back + completion side effects (single source) ----
+  // Everything flows from the doneById DIFF, so the write direction always
+  // matches what actually happened — even if two toggles land in one React
+  // batch. Failed writes queue in pendingHqRef (persisted) and retry on
+  // foreground, so an offline mark-done eventually reaches the server.
+  const writeHqStatus = useCallback((id, status) => {
+    delete pendingHqRef.current[id]
+    setHqTaskStatus(id, status).then((ok) => {
+      if (!ok) pendingHqRef.current[id] = status
     })
-    if (nowDone) cancelTaskReminder(id) // a completed task must never buzz later
-    // HQ tasks report status back so the morning run knows what happened.
-    if (id.startsWith('hq:')) setHqTaskStatus(id, nowDone ? 'done' : 'open')
   }, [])
+  useEffect(() => {
+    if (hydrated !== owner || prevDoneRef.current === null) {
+      prevDoneRef.current = doneById
+      return
+    }
+    const prev = prevDoneRef.current
+    prevDoneRef.current = doneById
+    for (const id of new Set([...Object.keys(prev), ...Object.keys(doneById)])) {
+      const was = !!prev[id]
+      const is = !!doneById[id]
+      if (was === is) continue
+      if (is) cancelTaskReminder(id) // a completed task must never buzz later
+      if (id.startsWith('hq:')) {
+        const dismissed = dismissIntentRef.current.delete(id)
+        writeHqStatus(id, is ? (dismissed ? 'dismissed' : 'done') : 'open')
+      }
+    }
+  }, [doneById, hydrated, owner, writeHqStatus])
+  // retry queued write-backs when the app returns to the foreground
+  useEffect(() => {
+    const retry = () => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+      for (const [id, status] of Object.entries(pendingHqRef.current)) writeHqStatus(id, status)
+    }
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', retry)
+    if (typeof window !== 'undefined') window.addEventListener('focus', retry)
+    return () => {
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', retry)
+      if (typeof window !== 'undefined') window.removeEventListener('focus', retry)
+    }
+  }, [writeHqStatus])
+
+  // ---- task actions ----
+  // toggleTask is a pure flip; reminder-cancel and HQ write-back happen in the
+  // diff effect above. The stored value is the completion time (not `true`) so
+  // off-day auto/email done entries can be aged out during persist.
+  const toggleTask = useCallback((id) => setDoneById((d) => {
+    const next = { ...d }
+    if (next[id]) delete next[id]
+    else next[id] = Date.now()
+    return next
+  }), [])
 
   const addTask = useCallback((title, opts = {}) => {
     // monotonic suffix so several adds in the same millisecond (e.g. autorepeat
@@ -456,14 +501,14 @@ export function useDayModel() {
 
   // HQ dismissal: hides it locally like a done task AND tells the backend it
   // wasn't useful (status 'dismissed'), so the morning run learns from it.
+  // The intent marker makes the diff effect write 'dismissed' instead of 'done'.
   const dismissHqTask = useCallback((id) => {
+    dismissIntentRef.current.add(id)
     setDoneById((d) => ({ ...d, [id]: Date.now() }))
-    cancelTaskReminder(id)
-    setHqTaskStatus(id, 'dismissed')
   }, [])
   const undoDismissHqTask = useCallback((id) => {
+    dismissIntentRef.current.delete(id)
     setDoneById((d) => { const n = { ...d }; delete n[id]; return n })
-    setHqTaskStatus(id, 'open')
   }, [])
 
   const clearCompleted = useCallback(() => {

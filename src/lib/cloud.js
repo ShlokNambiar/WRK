@@ -82,8 +82,10 @@ export async function pullTaskState() {
 export async function setHqTaskStatus(hqId, status) {
   try {
     const id = String(hqId).startsWith('hq:') ? String(hqId).slice(3) : String(hqId)
+    // status only — updated_at is trigger-stamped server-side (and the column
+    // grant would reject it anyway)
     const { error } = await supabase.from('hq_tasks')
-      .update({ status, updated_at: new Date().toISOString() })
+      .update({ status })
       .eq('id', id)
     return !error
   } catch {

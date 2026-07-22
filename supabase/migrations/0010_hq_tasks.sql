@@ -28,12 +28,33 @@ drop policy if exists "own hq_tasks status update" on public.hq_tasks;
 create policy "own hq_tasks status update" on public.hq_tasks
   for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
--- Column-level: authenticated may update ONLY status/updated_at. No INSERT or
--- DELETE grants — the service role (bypassing RLS) is the only writer.
-revoke insert, update, delete on public.hq_tasks from anon, authenticated;
+-- Column-level: authenticated may update ONLY status. updated_at is stamped
+-- by a trigger, not the client — it feeds the morning run's staleness logic,
+-- so a client must not be able to forge (or forget) it. No INSERT or DELETE
+-- grants — the service role (bypassing RLS) is the only writer.
+revoke all on public.hq_tasks from anon;
+revoke insert, update, delete on public.hq_tasks from authenticated;
 grant select on public.hq_tasks to authenticated;
-grant update (status, updated_at) on public.hq_tasks to authenticated;
+grant update (status) on public.hq_tasks to authenticated;
 
--- The feed builder reads open rows per user on every build.
+create or replace function public.hq_tasks_touch()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  new.updated_at := now();
+  return new;
+end;
+$$;
+revoke execute on function public.hq_tasks_touch() from public, anon, authenticated;
+
+drop trigger if exists hq_tasks_touch on public.hq_tasks;
+create trigger hq_tasks_touch
+  before update on public.hq_tasks
+  for each row execute function public.hq_tasks_touch();
+
+-- The feed builder reads open rows per user, ordered by due_date.
 create index if not exists hq_tasks_user_open_idx
-  on public.hq_tasks (user_id) where status = 'open';
+  on public.hq_tasks (user_id, due_date) where status = 'open';

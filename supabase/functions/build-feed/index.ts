@@ -154,15 +154,19 @@ async function buildForUser(u: UserRow, now: Date): Promise<{ ok: boolean; reaso
     brief.stats = computeStats(todayEvents, emailTasks);
 
     // Claude-managed HQ tasks (HQ mode): open rows only, never fail the build
-    // over them — accounts without HQ data get an empty list.
-    let hqTasks: ReturnType<typeof mapHqTasks> = [];
-    try {
-      const { data: hqRows } = await admin.from("hq_tasks")
-        .select("id,title,note,why,due_date,remind_at,urgent,status")
-        .eq("user_id", u.user_id).eq("status", "open")
-        .order("due_date", { ascending: true, nullsFirst: false }).limit(50);
+    // over them. supabase-js reports failures via `error` (it doesn't throw) —
+    // on error, carry the PREVIOUS payload's hqTasks forward instead of
+    // publishing an empty list over good data.
+    let hqTasks: ReturnType<typeof mapHqTasks>;
+    const { data: hqRows, error: hqErr } = await admin.from("hq_tasks")
+      .select("id,title,note,why,due_date,remind_at,urgent,status")
+      .eq("user_id", u.user_id).eq("status", "open")
+      .order("due_date", { ascending: true, nullsFirst: false }).limit(50);
+    if (hqErr) {
+      hqTasks = (prevRow?.payload as FeedPayload | null)?.hqTasks ?? [];
+    } else {
       hqTasks = mapHqTasks((hqRows ?? []) as HqRow[], dayKeyInTz(now, u.tz));
-    } catch (_e) { /* hq merge is best-effort */ }
+    }
 
     const payload = assemblePayload({
       profile: { name: u.name, email: u.email, avatarUrl: null },
