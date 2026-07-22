@@ -9,6 +9,7 @@ const SOURCE = {
   Meeting: { fg: '#8a5606', bg: '#fbecd2' },
   Calendar: { fg: '#1f8a5b', bg: '#dff0e8' },
   You: { fg: '#6a6a62', bg: '#eeede7' },
+  HQ: { fg: '#4a35c9', bg: '#e9e6fa' }, // Claude-planned (5.7:1 on its bg)
 }
 
 function decorate(t) {

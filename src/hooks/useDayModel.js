@@ -10,7 +10,7 @@ import { getSession, onAuthChange, signOut } from '../lib/supabase.js'
 import { syncProviderToken, tokenSyncOk, markTokenSynced, clearTokenSynced } from '../lib/syncToken.js'
 import {
   syncProfilePrefs, pushTaskState, pullTaskState, rebuildFeed,
-  deleteAccount as cloudDeleteAccount,
+  setHqTaskStatus, deleteAccount as cloudDeleteAccount,
 } from '../lib/cloud.js'
 import { getTier } from '../providers/entitlement.js'
 import { initBilling, purchasePro } from '../lib/billing.js'
@@ -83,6 +83,7 @@ export function useDayModel() {
   const [storageBroken, setStorageBroken] = useState(false)
   const [notifStatus, setNotifStatus] = useState('unavailable')
   const uidRef = useRef(0) // monotonic counter for unique manual-task ids
+  const doneRef = useRef({}) // mirror of doneById for reads inside stable callbacks
   const pushTimer = useRef(null)
   const stateRef = useRef(null) // latest persisted state, for flush-on-background
   const activeUidRef = useRef(null)
@@ -92,6 +93,7 @@ export function useDayModel() {
 
   const sessionUserId = session?.user?.id || null
   const owner = sessionUserId || 'anon'
+  doneRef.current = doneById
 
   // auth: load the session, keep it in sync, and on Google consent push the
   // provider refresh token to the backend (with retries — a single failed POST
@@ -248,6 +250,18 @@ export function useDayModel() {
     if (hydrated === owner && notifStatus === 'granted') scheduleDailyBrief(settings.briefTime)
   }, [hydrated, owner, notifStatus, settings.briefTime])
 
+  // Schedule local notifications for Claude-set reminders delivered in the
+  // feed (HQ mode); a completed/dismissed task's reminder is cancelled.
+  useEffect(() => {
+    if (notifStatus !== 'granted') return
+    for (const t of hqTasks) {
+      if (doneById[t.id]) { cancelTaskReminder(t.id); continue }
+      if (t.remindAt && new Date(t.remindAt) > new Date()) {
+        scheduleTaskReminder({ id: t.id, title: t.title, remindAt: t.remindAt })
+      }
+    }
+  }, [hqTasks, notifStatus, doneById])
+
   const todayKey = isoDate(now)
   const isToday = selectedDate === todayKey
 
@@ -259,6 +273,13 @@ export function useDayModel() {
     () => (proTier && settings.emailTasks !== false ? (feed?.emailTasks || []) : []),
     [feed, proTier, settings.emailTasks],
   )
+
+  // Claude-managed HQ tasks: always the user's own (no tier gate). due labels
+  // are computed like manual tasks so rollover buckets stay correct.
+  const hqTasks = useMemo(() => {
+    const raw = Array.isArray(feed?.hqTasks) ? feed.hqTasks : []
+    return raw.map((t) => ({ ...t, due: t.dueDate ? dueLabel(t.dueDate, now) : 'today' }))
+  }, [feed, now])
 
   // Home is ALWAYS today; the Calendar browses selectedDate. Keeping them
   // separate stops a day picked on the Calendar leaking into Home's "Today".
@@ -280,13 +301,13 @@ export function useDayModel() {
     () => (settings.autoDraft ? deriveAutoTasks(todayEvents, now) : []),
     [todayEvents, now, settings.autoDraft],
   )
-  // the task list is always about today (auto + email + manual)
+  // the task list is always about today (auto + email + HQ + manual)
   const tasks = useMemo(
-    () => mergeTasks([...autoTasks, ...emailTasks], manualTasks.map((t) => ({
+    () => mergeTasks([...autoTasks, ...emailTasks, ...hqTasks], manualTasks.map((t) => ({
       ...t,
       due: t.dueDate ? dueLabel(t.dueDate, now) : t.due,
     })), doneById),
-    [autoTasks, emailTasks, manualTasks, doneById, now],
+    [autoTasks, emailTasks, hqTasks, manualTasks, doneById, now],
   )
   const grouped = useMemo(() => groupTasks(tasks, now), [tasks, now])
   const timeline = useMemo(() => buildTimeline(selectedEvents, now), [selectedEvents, now])
@@ -354,17 +375,22 @@ export function useDayModel() {
   }, [flushPush])
 
   // ---- task actions ----
-  const toggleTask = useCallback((id) => setDoneById((d) => {
-    const next = { ...d }
-    // store the completion time (not just `true`) so off-day auto/email done
-    // entries can be aged out during persist instead of accumulating forever.
-    if (next[id]) delete next[id]
-    else {
-      next[id] = Date.now()
-      cancelTaskReminder(id) // a completed task must never buzz the phone later
-    }
-    return next
-  }), [])
+  const toggleTask = useCallback((id) => {
+    // Read the flip direction from current state, NOT inside the updater
+    // (updaters must stay pure — StrictMode runs them twice).
+    const nowDone = !doneRef.current[id]
+    setDoneById((d) => {
+      const next = { ...d }
+      // store the completion time (not just `true`) so off-day auto/email done
+      // entries can be aged out during persist instead of accumulating forever.
+      if (next[id]) delete next[id]
+      else next[id] = Date.now()
+      return next
+    })
+    if (nowDone) cancelTaskReminder(id) // a completed task must never buzz later
+    // HQ tasks report status back so the morning run knows what happened.
+    if (id.startsWith('hq:')) setHqTaskStatus(id, nowDone ? 'done' : 'open')
+  }, [])
 
   const addTask = useCallback((title, opts = {}) => {
     // monotonic suffix so several adds in the same millisecond (e.g. autorepeat
@@ -426,6 +452,18 @@ export function useDayModel() {
       const rank = new Map(newOrderIds.map((id, i) => [id, slots[i]]))
       return ts.map((t) => (idset.has(t.id) ? { ...t, order: rank.get(t.id) } : t))
     })
+  }, [])
+
+  // HQ dismissal: hides it locally like a done task AND tells the backend it
+  // wasn't useful (status 'dismissed'), so the morning run learns from it.
+  const dismissHqTask = useCallback((id) => {
+    setDoneById((d) => ({ ...d, [id]: Date.now() }))
+    cancelTaskReminder(id)
+    setHqTaskStatus(id, 'dismissed')
+  }, [])
+  const undoDismissHqTask = useCallback((id) => {
+    setDoneById((d) => { const n = { ...d }; delete n[id]; return n })
+    setHqTaskStatus(id, 'open')
   }, [])
 
   const clearCompleted = useCallback(() => {
@@ -520,6 +558,7 @@ export function useDayModel() {
     selectedDate, setSelectedDate, datesWithEvents, datesCovered, isToday, todayKey,
     settings, setSetting,
     toggleTask, addTask, editTask, deleteTask, restoreTask, reorderTasks, clearCompleted,
+    dismissHqTask, undoDismissHqTask,
     notifStatus, enableNotifications, storageBroken,
     // auth + entitlement
     session, user, signedIn, authReady, tier, isPro, upgradeToPro, tokenSynced,

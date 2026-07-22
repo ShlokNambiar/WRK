@@ -76,6 +76,21 @@ export async function pullTaskState() {
   }
 }
 
+// ---- HQ tasks (Claude-managed; spec: docs/superpowers/specs/2026-07-22-wrk-hq-mode-design.md) ----
+// The app may only flip status (column-level grant); rows are Claude-written
+// via the service role. Accepts the app-side 'hq:<uuid>' id or a bare uuid.
+export async function setHqTaskStatus(hqId, status) {
+  try {
+    const id = String(hqId).startsWith('hq:') ? String(hqId).slice(3) : String(hqId)
+    const { error } = await supabase.from('hq_tasks')
+      .update({ status, updated_at: new Date().toISOString() })
+      .eq('id', id)
+    return !error
+  } catch {
+    return false
+  }
+}
+
 // ---- account deletion (Play-required) ----
 // POSTs the user's JWT to the delete-account Edge Function, which removes every
 // server-side trace (profile, feed, task backup, email rules, entitlement, the
