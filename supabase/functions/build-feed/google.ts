@@ -12,6 +12,10 @@ export class TokenRevokedError extends Error {
 
 type FetchFn = typeof fetch
 
+// Every outbound Google call is bounded so one hung endpoint can't stall a
+// build (and, in a batch, everyone behind it). Tests' fake fetchFn ignores it.
+const GOOGLE_TIMEOUT_MS = 15_000
+
 // --- pure: the 7-day [today 00:00, today+7 00:00) window in the user's
 // timezone as RFC3339 with offset ---
 function offsetFor(now: Date, tz: string): string {
@@ -57,6 +61,7 @@ export async function mintAccessToken(
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body,
+    signal: AbortSignal.timeout(GOOGLE_TIMEOUT_MS),
   })
   const data = await res.json()
   if (!res.ok) {
@@ -84,7 +89,7 @@ export async function fetchWeekEvents(
   })
   const res = await fetchFn(
     `https://www.googleapis.com/calendar/v3/calendars/primary/events?${qs}`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
+    { headers: { Authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(GOOGLE_TIMEOUT_MS) },
   )
   if (res.status === 401) throw new TokenRevokedError('calendar 401')
   if (!res.ok) throw new Error('calendar fetch ' + res.status)
@@ -109,7 +114,7 @@ export async function fetchActionableUnread(
 ): Promise<{ messages: { threadId: string; subject: string; from: string; listUnsubscribe: string }[] }> {
   const headers = { Authorization: `Bearer ${accessToken}` }
   const listQs = new URLSearchParams({ q: GMAIL_QUERY, maxResults: '20' })
-  const listRes = await fetchFn(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${listQs}`, { headers })
+  const listRes = await fetchFn(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${listQs}`, { headers, signal: AbortSignal.timeout(GOOGLE_TIMEOUT_MS) })
   if (listRes.status === 401) throw new TokenRevokedError('gmail 401')
   if (!listRes.ok) throw new Error('gmail list ' + listRes.status)
   const list = await listRes.json()
@@ -121,7 +126,7 @@ export async function fetchActionableUnread(
     detQs.append('metadataHeaders', 'Subject')
     detQs.append('metadataHeaders', 'From')
     detQs.append('metadataHeaders', 'List-Unsubscribe')
-    const detRes = await fetchFn(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?${detQs}`, { headers })
+    const detRes = await fetchFn(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?${detQs}`, { headers, signal: AbortSignal.timeout(GOOGLE_TIMEOUT_MS) })
     if (!detRes.ok) continue
     const det = await detRes.json()
     out.push({

@@ -9,13 +9,6 @@ export function fmtTime(d) {
   return `${h}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-export function fmtDur(min) {
-  if (min < 60) return `${min}m`
-  const h = Math.floor(min / 60)
-  const r = min % 60
-  return r ? `${h}h ${r}m` : `${h}h`
-}
-
 // ---------- schedule (Today section) ----------
 const PREP_RE = /review|presentation|interview|demo|pitch|deck|quarterly|board|client/i
 // Recurring lightweight meetings that never warrant a "prep" task.
@@ -24,25 +17,8 @@ const ROUTINE_RE = /standup|stand-up|sync|daily|scrum|1:1|1-1|check-?in/i
 function accentFor(ev) {
   const t = ev.title.toLowerCase()
   if (/standup|sync|daily|scrum/.test(t)) return C.green
-  if (/quarterly|client|acme|board/.test(t)) return C.amber
+  if (/quarterly|client|board/.test(t)) return C.amber
   return C.blue
-}
-
-export function formatSchedule(events) {
-  return events.map((ev) => {
-    const people = ev.attendeeCount
-    const where = ev.videoLabel || ev.location || null
-    const meta = [people ? `${people} people` : null, where].filter(Boolean).join(' · ')
-    return {
-      id: ev.id,
-      time: fmtTime(ev.start),
-      dur: fmtDur(ev.durationMin),
-      accent: accentFor(ev),
-      title: ev.title,
-      meta,
-      badge: ev.movedFrom ? `Moved from ${ev.movedFrom}` : null,
-    }
-  })
 }
 
 // ---------- auto-tasks derived from the calendar ----------

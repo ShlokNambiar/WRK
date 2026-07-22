@@ -42,7 +42,7 @@ export default function TasksScreen({ day, mobile, reduced, openEdit, openTaskDe
             return (
               <Pressable key={c.key} onPress={() => setFilter(c.key)} ariaPressed={on}
                 style={{
-                  flex: 'none', padding: '10px 14px', borderRadius: 14, fontSize: 12.5, fontWeight: 600, minHeight: 40,
+                  flex: 'none', padding: '12px 14px', borderRadius: 14, fontSize: 12.5, fontWeight: 600, minHeight: 44,
                   background: on ? C.blue : '#fff', color: on ? '#fff' : '#4a4a44',
                   boxShadow: on ? '0 4px 12px rgba(26,24,240,.28)' : '0 2px 8px rgba(0,0,0,.05)',
                 }}>{c.label}</Pressable>

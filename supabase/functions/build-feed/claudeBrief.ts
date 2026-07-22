@@ -11,6 +11,9 @@ import { SYSTEM, userContent, validateBrief } from './briefShared.ts'
 
 const MODEL = 'claude-haiku-4-5'
 const ENDPOINT = 'https://api.anthropic.com/v1/messages'
+// Bounded so a hung API can't stall the build; a timeout throws like any other
+// error and the caller falls back to templateBrief.
+const AI_TIMEOUT_MS = 30_000
 
 export async function claudeBrief(
   events: FeedEvent[],
@@ -31,6 +34,7 @@ export async function claudeBrief(
       system: SYSTEM,
       messages: [{ role: 'user', content: userContent(events, emailTasks) }],
     }),
+    signal: AbortSignal.timeout(AI_TIMEOUT_MS),
   })
   if (!res.ok) throw new Error('claudeBrief: API status ' + res.status)
   const data = await res.json()

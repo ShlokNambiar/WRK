@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "aso-audit": {
+      "source": "eronred/aso-skills",
+      "sourceType": "github",
+      "skillPath": "skills/aso-audit/SKILL.md",
+      "computedHash": "477bacb532df2597dbc624de3598bef2414460d20d11473ab939479b15e9f576"
+    }
+  }
+}

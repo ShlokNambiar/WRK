@@ -39,6 +39,9 @@ function toGoogle(e) {
 }
 
 export function normalizeDay(rawEvents = []) {
+  // A malformed payload (days value that isn't an array) must degrade to an
+  // empty day, not crash render — the payload is cached, so a crash would loop.
+  if (!Array.isArray(rawEvents)) return []
   return rawEvents.map((e) => normalizeEvent(toGoogle(e))).sort((a, b) => a.start - b.start)
 }
 
@@ -105,10 +108,13 @@ function pendingPayload(now, user) {
 export async function getFeed(now = new Date()) {
   const base = { demo: false, stale: false, error: false, needsReauth: false }
 
+  // Resolve the user from the LOCAL session (no network). auth.getUser() hits
+  // /auth/v1/user, so in airplane mode it fails and a signed-in user would fall
+  // through to the demo payload — with their real cached feed unreachable.
   let user = null
   try {
-    const { data } = await supabase.auth.getUser()
-    user = data?.user || null
+    const { data } = await supabase.auth.getSession()
+    user = data?.session?.user || null
   } catch {
     user = null
   }

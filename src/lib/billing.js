@@ -27,15 +27,27 @@ async function plugin() {
   }
 }
 
-let configured = false
+let configuredUserId = null
 
-// Call once after the user is known. No-op on web / before keys exist.
+// True when a real purchase flow can run on this device (native + key set).
+// Lets the UI hide/replace upgrade CTAs instead of dead-ending in "coming soon".
+export function billingReady() {
+  return isNative() && !!RC_PUBLIC_KEY
+}
+
+// Call whenever the signed-in user is known. No-op on web / before keys exist.
+// On an account SWITCH this must re-identify — configure() once and never again
+// would attribute user B's purchase to user A's RevenueCat identity.
 export async function initBilling(userId) {
   const Purchases = await plugin()
-  if (!Purchases || configured) return
+  if (!Purchases || !userId || configuredUserId === userId) return
   try {
-    await Purchases.configure({ apiKey: RC_PUBLIC_KEY, appUserID: userId || undefined })
-    configured = true
+    if (configuredUserId === null) {
+      await Purchases.configure({ apiKey: RC_PUBLIC_KEY, appUserID: userId })
+    } else {
+      await Purchases.logIn({ appUserID: userId })
+    }
+    configuredUserId = userId
   } catch {
     /* not fatal — billing simply stays unavailable */
   }

@@ -5,11 +5,13 @@ import Avatar from '../components/Avatar.jsx'
 import { C, FONT_SERIF, FONT_SANS } from '../theme.js'
 import { signInWithGoogle } from '../lib/supabase.js'
 import { listEmailRules, removeEmailRule } from '../lib/cloud.js'
-import { restorePurchases } from '../lib/billing.js'
+import { restorePurchases, billingReady } from '../lib/billing.js'
 import { openUrl } from '../lib/openUrl.js'
 import { useMeasuredHeight } from '../hooks/useMeasuredHeight.js'
 
-const PRIVACY_URL = 'https://github.com/ShlokNambiar/WRK/blob/main/docs/PRIVACY.md'
+// GitHub Pages (repo Settings → Pages → main /docs). Play review rejects
+// raw-repo blob links, so the policy is served as a real page.
+const PRIVACY_URL = 'https://shloknambiar.github.io/WRK/PRIVACY.html'
 const FEEDBACK_MAILTO = 'mailto:shlok@pepl.life?subject=WRK%20feedback'
 
 function relativeTime(iso) {
@@ -61,24 +63,29 @@ export default function AccountScreen({ day, mobile, reduced, onSnack, onAsk }) 
   const {
     profile, settings, setSetting, feedMeta, generatedAt, rebuild, rebuilding,
     signedIn, user, isPro, signOut, upgradeToPro, notifStatus, enableNotifications,
+    tokenSynced, removeAccount,
   } = day
   const [upgradeNote, setUpgradeNote] = useState('')
   const [signingIn, setSigningIn] = useState(false)
   const [signInErr, setSignInErr] = useState('')
-  const [rules, setRules] = useState(null) // null = not loaded
+  const [rules, setRules] = useState(null) // null = not loaded, 'error' = load failed
+  const [rulesRetry, setRulesRetry] = useState(0)
+  const [deleting, setDeleting] = useState(false)
   const headerTop = mobile ? 'calc(14px + env(safe-area-inset-top))' : '54px'
   const [headerRef, headerH] = useMeasuredHeight()
 
-  // muted/allowed senders (the curation dial behind the email tasks)
+  // muted/allowed senders (the curation dial behind the email tasks).
+  // A failed load must NOT render as "None yet" — that reads as "my mute
+  // rules were deleted". It gets its own error row with a retry.
   useEffect(() => {
     if (!signedIn) { setRules(null); return }
     let on = true
-    listEmailRules().then((r) => { if (on) setRules(r) }).catch(() => { if (on) setRules([]) })
+    listEmailRules().then((r) => { if (on) setRules(r) }).catch(() => { if (on) setRules('error') })
     return () => { on = false }
-  }, [signedIn])
+  }, [signedIn, rulesRetry])
 
-  // Sign-in / reconnect with real feedback: on success the page redirects (so
-  // we leave the spinner on); on error/cancel we surface a message and re-enable.
+  // Sign-in / reconnect with real feedback: on web the page redirects (so we
+  // leave the spinner on); on error/cancel we surface a message and re-enable.
   const handleSignIn = async () => {
     if (signingIn) return
     setSigningIn(true)
@@ -90,6 +97,29 @@ export default function AccountScreen({ day, mobile, reduced, onSnack, onAsk }) 
       setSignInErr("Couldn't start Google sign-in. Try again."); setSigningIn(false)
     }
   }
+
+  // On native there is no redirect — the Custom Tab opens over the app. If the
+  // user backs out of it without completing OAuth, no auth event ever fires, so
+  // the "Connecting…" spinner used to stick (disabled button) until a force
+  // restart. When the app regains focus with no session, re-enable after a
+  // grace period (the deep-link exchange, when it IS coming, lands well inside it).
+  useEffect(() => {
+    if (!signingIn) return
+    if (signedIn) { setSigningIn(false); return }
+    let t = null
+    const onBack = () => {
+      if (document.visibilityState !== 'visible') return
+      clearTimeout(t)
+      t = setTimeout(() => setSigningIn(false), 4000)
+    }
+    document.addEventListener('visibilitychange', onBack)
+    window.addEventListener('focus', onBack)
+    return () => {
+      clearTimeout(t)
+      document.removeEventListener('visibilitychange', onBack)
+      window.removeEventListener('focus', onBack)
+    }
+  }, [signingIn, signedIn])
 
   const confirmSignOut = () => {
     onAsk?.({
@@ -113,7 +143,8 @@ export default function AccountScreen({ day, mobile, reduced, onSnack, onAsk }) 
   const avatarUrl = profile.avatarUrl || user?.user_metadata?.avatar_url || null
   const needsReauth = !!feedMeta.needsReauth
 
-  // "Live" has a freshness threshold now — a dead cron shows amber, not green
+  // "Live" has a freshness threshold — a feed that missed today's build slot
+  // (>26h old) must not wear a green dot for another four hours.
   const hrs = ageHours(generatedAt)
   const status = feedMeta.pending
     ? { text: 'Preparing your feed', color: '#b06d0a' }
@@ -121,7 +152,7 @@ export default function AccountScreen({ day, mobile, reduced, onSnack, onAsk }) 
       ? { text: 'Demo data', color: C.muted }
       : feedMeta.stale
         ? { text: 'Offline — last saved', color: '#b06d0a' }
-        : hrs > 30
+        : hrs > 26
           ? { text: 'Out of date', color: C.red }
           : { text: 'Live', color: C.green }
   const updatedSub = feedMeta.pending
@@ -159,6 +190,18 @@ export default function AccountScreen({ day, mobile, reduced, onSnack, onAsk }) 
                 <div style={{ fontSize: 12.5, color: C.muted, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{email}</div>
               </div>
             </div>
+
+            {/* first-consent token sync failed: the backend never got the
+                Google token, so no feed will EVER build. A fresh sign-in
+                re-mints the refresh token (prompt=consent) and self-heals. */}
+            {!needsReauth && feedMeta.pending && !tokenSynced && (
+              <Pressable onPress={handleSignIn} scale={0.99}
+                style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 0 18px', padding: '12px 14px', borderRadius: 14, background: '#fdeee0', border: '1px solid #f3d9be', width: '100%', textAlign: 'left' }}>
+                <span style={{ fontSize: 14 }}>⚠</span>
+                <span style={{ flex: 1, fontSize: 12.5, color: '#7a4d12' }}>Setup didn’t finish — reconnect Google so your feed can build</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: '#b06d0a' }}>{signingIn ? 'Connecting…' : 'Reconnect ›'}</span>
+              </Pressable>
+            )}
 
             {/* reconnect prompt */}
             {needsReauth && (
@@ -207,8 +250,17 @@ export default function AccountScreen({ day, mobile, reduced, onSnack, onAsk }) 
                     action={<Chevron color={C.blue} />} border />
                 </Pressable>
               )}
-              <Row title="Auto-draft tasks from email" sub="Let WRK suggest to-dos"
-                action={<Toggle on={settings.autoDraft} onChange={(v) => setSetting('autoDraft', v)} reduced={reduced} />} />
+              {/* Two honest switches: the old single "Auto-draft tasks from
+                  email" toggle actually gated CALENDAR suggestions — a consent
+                  control that lied. Email tasks now have their own switch,
+                  enforced server-side (build-feed skips Gmail entirely). */}
+              <Row title="Suggest tasks from calendar" sub="Prep nudges for invites & RSVPs"
+                action={<Toggle on={settings.autoDraft} onChange={(v) => setSetting('autoDraft', v)} reduced={reduced} />}
+                border={isPro} />
+              {isPro && (
+                <Row title="Email tasks" sub="Turn emails that need a reply into tasks"
+                  action={<Toggle on={settings.emailTasks !== false} onChange={(v) => setSetting('emailTasks', v)} reduced={reduced} />} />
+              )}
             </Card>
 
             {/* sender curation */}
@@ -217,10 +269,17 @@ export default function AccountScreen({ day, mobile, reduced, onSnack, onAsk }) 
                 <SectionLabel>Email senders</SectionLabel>
                 <Card>
                   {rules === null && <Row title="Muted senders" sub="Loading…" />}
-                  {rules !== null && rules.length === 0 && (
+                  {rules === 'error' && (
+                    <Pressable onPress={() => { setRules(null); setRulesRetry((n) => n + 1) }}
+                      style={{ display: 'block', width: '100%', textAlign: 'left' }}>
+                      <Row title="Muted senders" sub="Couldn’t load — tap to retry"
+                        action={<Chevron color={C.blue} />} />
+                    </Pressable>
+                  )}
+                  {Array.isArray(rules) && rules.length === 0 && (
                     <Row title="Muted senders" sub="None yet — mute one from any email task" />
                   )}
-                  {(rules || []).map((r, i) => (
+                  {(Array.isArray(rules) ? rules : []).map((r, i) => (
                     <Row key={r.sender}
                       title={<span style={{ fontSize: 13.5 }}>{r.sender}</span>}
                       sub={r.mode === 'mute' ? 'Muted — never becomes a task' : 'Always allowed'}
@@ -269,7 +328,7 @@ export default function AccountScreen({ day, mobile, reduced, onSnack, onAsk }) 
                     <Row title="Restore purchases" sub="Bought Pro on another device?" action={<Chevron />} />
                   </Pressable>
                 </>
-              ) : (
+              ) : billingReady() ? (
                 <Pressable
                   onPress={async () => {
                     setUpgradeNote('')
@@ -284,6 +343,11 @@ export default function AccountScreen({ day, mobile, reduced, onSnack, onAsk }) 
                     sub={upgradeNote || 'Add the emails that need a reply + the AI brief'}
                     action={<Chevron color={C.blue} />} />
                 </Pressable>
+              ) : (
+                /* billing not wired yet: an "Upgrade" that dead-ends in
+                   "coming soon" is a broken promise, not a CTA */
+                <Row title="Pro is free during beta"
+                  sub="Email tasks + the AI brief — billing opens after beta" />
               )}
             </Card>
 
@@ -293,6 +357,36 @@ export default function AccountScreen({ day, mobile, reduced, onSnack, onAsk }) 
             <Pressable onPress={confirmSignOut}
               style={{ width: '100%', background: C.card, borderRadius: 16, padding: 15, textAlign: 'center', fontSize: 14.5, fontWeight: 600, color: C.red, boxShadow: '0 6px 20px rgba(0,0,0,.05)' }}>
               Sign out
+            </Pressable>
+
+            {/* account deletion — Play requires an in-app path. Double-confirmed:
+                the second dialog spells out exactly what is destroyed. */}
+            <Pressable
+              onPress={() => {
+                if (deleting) return
+                onAsk?.({
+                  title: 'Delete your account?',
+                  body: 'This permanently erases your WRK account and everything in it.',
+                  confirmLabel: 'Continue', tone: 'red',
+                  onConfirm: () => setTimeout(() => onAsk?.({
+                    title: 'This can’t be undone',
+                    body: 'Your feed, task backup, email rules and Google connection are deleted from our servers immediately. Your Google account itself is untouched.',
+                    confirmLabel: 'Delete everything', tone: 'red',
+                    onConfirm: async () => {
+                      setDeleting(true)
+                      const r = await removeAccount()
+                      setDeleting(false)
+                      onSnack?.({
+                        text: r === 'deleted'
+                          ? 'Account deleted — thanks for trying WRK'
+                          : 'Couldn’t delete right now — check your connection and try again',
+                      })
+                    },
+                  }), 150),
+                })
+              }}
+              style={{ width: '100%', marginTop: 12, background: 'transparent', borderRadius: 16, padding: 13, textAlign: 'center', fontSize: 13, fontWeight: 600, color: C.muted, minHeight: 44 }}>
+              {deleting ? 'Deleting…' : 'Delete account & data'}
             </Pressable>
           </>
         ) : (
@@ -351,7 +445,7 @@ function AboutCard({ onSnack }) {
         <Pressable onPress={() => openUrl(FEEDBACK_MAILTO)} style={{ display: 'block', width: '100%', textAlign: 'left' }}>
           <Row title="Send feedback" sub="Beta bugs & ideas — straight to the maker" action={<Chevron />} border />
         </Pressable>
-        <Row title="Version" sub="WRK beta" action={<span style={{ fontSize: 12, color: C.faint }}>1.0</span>} />
+        <Row title="Version" sub="WRK beta" action={<span style={{ fontSize: 12, color: C.faint }}>1.0.0</span>} />
       </Card>
     </>
   )

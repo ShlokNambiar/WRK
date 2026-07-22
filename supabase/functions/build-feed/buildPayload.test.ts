@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildEvents, buildEmailTasks, templateBrief, assemblePayload, computeStats, groupEventsByDay, applyMovedFrom, dayKeyInTz, usersDueNow, rateLimitRetryAfter } from './buildPayload.ts'
+import { buildEvents, buildEmailTasks, templateBrief, assemblePayload, computeStats, groupEventsByDay, applyMovedFrom, dayKeyInTz, usersDueNow, rateLimitRetryAfter, safeTz, DEFAULT_TZ, emailTasksAllowed } from './buildPayload.ts'
 
 // ---- buildEvents: Google Calendar events.list -> FeedEvent[] ----
 test('buildEvents maps a timed event with all fields', () => {
@@ -370,13 +370,40 @@ test('usersDueNow falls back to the app-default tz on a corrupt tz string', () =
   assert.deepEqual(usersDueNow(users, at).map((u) => u.user_id), ['x'])
 })
 
-// ---- rateLimitRetryAfter: one user-invoked rebuild per 10 minutes ----
-test('rateLimitRetryAfter allows when there is no previous build', () => {
+// ---- safeTz: garbage profiles.tz must never crash a build ----
+test('safeTz passes a valid IANA zone through unchanged', () => {
+  assert.equal(safeTz('Asia/Kolkata'), 'Asia/Kolkata')
+  assert.equal(safeTz('America/New_York'), 'America/New_York')
+  assert.equal(safeTz('UTC'), 'UTC')
+})
+
+test('safeTz falls back to the app default on garbage', () => {
+  assert.equal(DEFAULT_TZ, 'Asia/Kolkata')
+  assert.equal(safeTz('Not/AZone'), DEFAULT_TZ)
+  assert.equal(safeTz(''), DEFAULT_TZ)
+  assert.equal(safeTz('<script>alert(1)</script>'), DEFAULT_TZ)
+})
+
+// ---- emailTasksAllowed: tier gate + the user's email-tasks switch ----
+test('emailTasksAllowed: pro with the switch on (or unset) gets the email pipeline', () => {
+  assert.equal(emailTasksAllowed({ tier: 'pro', email_tasks_enabled: true }), true)
+  assert.equal(emailTasksAllowed({ tier: 'pro' }), true) // column default is true
+})
+
+test('emailTasksAllowed: free tier or switch off skips the email pipeline', () => {
+  assert.equal(emailTasksAllowed({ tier: 'free', email_tasks_enabled: true }), false)
+  assert.equal(emailTasksAllowed({ tier: 'pro', email_tasks_enabled: false }), false)
+})
+
+// ---- rateLimitRetryAfter: one user-invoked rebuild per 10 minutes, keyed on
+// feeds.last_rebuild_at (stamped BEFORE any outbound work, so error paths
+// can't retry without limit) ----
+test('rateLimitRetryAfter allows when there is no previous rebuild stamp', () => {
   assert.equal(rateLimitRetryAfter(null, new Date('2026-07-01T10:00:00Z')), 0)
 })
 
 test('rateLimitRetryAfter blocks inside the window with seconds remaining', () => {
-  const now = new Date('2026-07-01T10:09:00Z') // 9 min after the last build
+  const now = new Date('2026-07-01T10:09:00Z') // 9 min after the last stamp
   assert.equal(rateLimitRetryAfter('2026-07-01T10:00:00Z', now), 60)
 })
 

@@ -14,6 +14,9 @@ import { SYSTEM, userContent, validateBrief } from './briefShared.ts'
 
 const MODEL = 'gemini-2.5-flash'
 const ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`
+// Bounded so a hung API can't stall the build; a timeout throws like any other
+// error and the caller falls back to templateBrief.
+const AI_TIMEOUT_MS = 30_000
 
 export async function geminiBrief(
   events: FeedEvent[],
@@ -36,6 +39,7 @@ export async function geminiBrief(
         thinkingConfig: { thinkingBudget: 0 },
       },
     }),
+    signal: AbortSignal.timeout(AI_TIMEOUT_MS),
   })
   if (!res.ok) throw new Error('geminiBrief: API status ' + res.status)
   const data = await res.json()

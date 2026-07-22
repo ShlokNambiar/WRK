@@ -61,10 +61,24 @@ Deno.serve(async (req) => {
 
   // Capture the device timezone so the daily feed builds the user's real "today"
   // (otherwise non-IST users get a day-key mismatch and a blank calendar).
-  const tz = typeof body?.tz === "string" && body.tz ? body.tz : null;
+  // Validate it's a real IANA zone before writing (mirrors build-feed's safeTz):
+  // a garbage value would crash every Intl call in the builder, so fall back to
+  // the app default instead of storing it.
+  let tz = typeof body?.tz === "string" && body.tz ? body.tz : null;
   if (tz) {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    } catch {
+      tz = "Asia/Kolkata";
+    }
     await admin.from("profiles").update({ tz }).eq("id", user.id);
   }
+
+  // A freshly stored refresh token means Google access works again — clear the
+  // reauth flag now so the app's reconnect banner disappears immediately
+  // instead of waiting for the next successful build (the client triggers the
+  // rebuild itself right after this call).
+  await admin.from("feeds").update({ needs_reauth: false }).eq("user_id", user.id);
 
   return new Response(null, { status: 204, headers: CORS });
 });

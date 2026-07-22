@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { motion } from 'framer-motion'
 import Pressable from './Pressable.jsx'
 import { C, FONT_SANS } from '../theme.js'
@@ -5,7 +6,7 @@ import { C, FONT_SANS } from '../theme.js'
 // Source-badge palette
 const SOURCE = {
   Email: { fg: '#1a18f0', bg: '#eceaf9' },
-  Meeting: { fg: '#b06d0a', bg: '#fbecd2' },
+  Meeting: { fg: '#8a5606', bg: '#fbecd2' },
   Calendar: { fg: '#1f8a5b', bg: '#dff0e8' },
   You: { fg: '#6a6a62', bg: '#eeede7' },
 }
@@ -15,7 +16,9 @@ function decorate(t) {
     ringColor: t.done ? C.blue : t.urgent ? C.red : '#cfcec6',
     fillColor: t.done ? C.blue : 'transparent',
     titleColor: t.done ? '#a8a8a0' : C.ink,
-    dueColor: t.done ? '#b0b0a8' : t.urgent ? C.red : C.inkSoft,
+    // urgent pill text darkened from C.red (#ff3b30, 3.55:1) so 11px text
+    // clears WCAG AA (4.99:1 on the tinted pill bg); done gray is intentional.
+    dueColor: t.done ? '#b0b0a8' : t.urgent ? '#c8210f' : C.inkSoft,
     dueBg: t.done ? C.paper2 : t.urgent ? 'rgba(255,59,48,.1)' : C.paper2,
   }
 }
@@ -24,7 +27,7 @@ function decorate(t) {
 // (edit sheet for manual tasks, detail sheet for auto/email ones). A whole-row
 // toggle made every mis-tap silently complete a task — the worst possible
 // outcome for a stray touch.
-export default function TaskRow({ task, onToggle, onEdit, onDetail, reduced }) {
+function TaskRow({ task, onToggle, onEdit, onDetail, reduced }) {
   const canEdit = onEdit && task.source === 'You'
   const canDetail = onDetail && task.source !== 'You'
   const openRow = canEdit ? () => onEdit(task.id) : canDetail ? () => onDetail(task) : null
@@ -123,3 +126,5 @@ export default function TaskRow({ task, onToggle, onEdit, onDetail, reduced }) {
     </motion.div>
   )
 }
+
+export default memo(TaskRow)

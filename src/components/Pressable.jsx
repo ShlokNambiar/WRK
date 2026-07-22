@@ -1,8 +1,10 @@
+import { forwardRef } from 'react'
 import { motion } from 'framer-motion'
 
 // Accessible pressable: a real <button> with a spring press-state and a
 // visible focus ring (keyboard only). Use for anything tappable.
-export default function Pressable({
+// forwardRef so dialogs can move focus onto a button programmatically.
+const Pressable = forwardRef(function Pressable({
   children,
   onPress,
   style,
@@ -12,7 +14,7 @@ export default function Pressable({
   scale = 0.95,
   stop = false,
   ...rest
-}) {
+}, ref) {
   const Comp = motion[as] || motion.button
   const base = {
     appearance: 'none',
@@ -30,6 +32,7 @@ export default function Pressable({
   }
   return (
     <Comp
+      ref={ref}
       type={as === 'button' ? 'button' : undefined}
       aria-label={ariaLabel}
       aria-pressed={ariaPressed}
@@ -46,4 +49,6 @@ export default function Pressable({
       {children}
     </Comp>
   )
-}
+})
+
+export default Pressable

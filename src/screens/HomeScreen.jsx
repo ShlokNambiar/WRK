@@ -1,4 +1,4 @@
-import { Fragment } from 'react'
+import { Fragment, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import Avatar from '../components/Avatar.jsx'
 import Pressable from '../components/Pressable.jsx'
@@ -7,22 +7,65 @@ import TimelineEvent from '../components/TimelineEvent.jsx'
 import NowMarker from '../components/NowMarker.jsx'
 import { s } from '../style.js'
 import { useMeasuredHeight } from '../hooks/useMeasuredHeight.js'
+import { billingReady } from '../lib/billing.js'
 import { C, FONT_SERIF, FONT_SANS, SPRING } from '../theme.js'
 
-export default function HomeScreen({ day, mobile, reduced, onAddTask, goToAccount, openEdit, openTaskDetail, openEventDetail }) {
+// "updated 3h ago" for the offline banner
+function agoLabel(iso) {
+  if (!iso) return ''
+  const h = (Date.now() - new Date(iso).getTime()) / 3600e3
+  if (Number.isNaN(h)) return ''
+  if (h < 1) return 'updated under an hour ago'
+  if (h < 24) return `updated ${Math.floor(h)}h ago`
+  return `updated ${Math.floor(h / 24)}d ago`
+}
+
+export default function HomeScreen({ day, mobile, reduced, onAddTask, goToAccount, openEdit, openTaskDetail, openEventDetail, onSnack }) {
   const {
     greeting, brief, briefFromToday, timeline, todayTimeline, tasks, nowLabel, toggleTask,
     profile, feedMeta, loading, isPro, signedIn, notifStatus, enableNotifications, generatedAt,
+    rebuild, rebuilding, tokenSynced,
   } = day
   const demo = feedMeta?.demo
   const pending = feedMeta?.pending // signed in, first feed not built yet
   const needsReauth = feedMeta?.needsReauth
+  const stale = feedMeta?.stale
+  const feedError = feedMeta?.error
   const [headerRef, headerH] = useMeasuredHeight()
   const headerTop = mobile ? 'calc(14px + env(safe-area-inset-top))' : '54px'
   // Home is ALWAYS today, even if the Calendar tab is browsing another day
   const tl = todayTimeline || timeline
   const nowIndex = tl.findIndex((e) => !e.isPast)
   const openTasks = tasks.filter((t) => !t.done).slice(0, 4)
+
+  // pull-to-refresh: overscroll at the top triggers the same server rebuild as
+  // Account → Refresh (rate-limited server-side, so yanking twice is harmless)
+  const mainRef = useRef(null)
+  const pullStart = useRef(null)
+  const [pull, setPull] = useState(0)
+  const onTouchStart = (e) => {
+    if ((mainRef.current?.scrollTop || 0) <= 0) pullStart.current = e.touches[0].clientY
+    else pullStart.current = null
+  }
+  const onTouchMove = (e) => {
+    if (pullStart.current == null) return
+    if ((mainRef.current?.scrollTop || 0) > 0) { pullStart.current = null; setPull(0); return }
+    const d = e.touches[0].clientY - pullStart.current
+    setPull(d > 0 ? Math.min(d * 0.45, 84) : 0)
+  }
+  const onTouchEnd = async () => {
+    const fired = pull > 56
+    pullStart.current = null
+    setPull(0)
+    if (!fired || rebuilding) return
+    if (signedIn) {
+      const r = await rebuild()
+      if (r === 'rate_limited') onSnack?.({ text: 'Just rebuilt — try again in a few minutes' })
+      else if (r === 'error') onSnack?.({ text: "Couldn't refresh — showing the last saved feed" })
+    } else {
+      day.refresh()
+    }
+  }
 
   // when was the brief built? ("6:32 am" when fresh; the template fallback is live)
   const briefStamp = briefFromToday && generatedAt
@@ -49,9 +92,23 @@ export default function HomeScreen({ day, mobile, reduced, onAddTask, goToAccoun
       </header>
 
       {/* scroller */}
-      <main className="wrk-scroll" style={{ ...scroller(mobile), top: headerH || scroller(mobile).top }}>
-        {/* demo-data banner (logged out / no feed configured) */}
-        {demo && (
+      <main ref={mainRef} className="wrk-scroll"
+        onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}
+        style={{ ...scroller(mobile), top: headerH || scroller(mobile).top }}>
+        {/* pull-to-refresh indicator */}
+        {(pull > 0 || rebuilding) && (
+          <div aria-hidden={pull <= 0 && !rebuilding} style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+            height: rebuilding ? 34 : Math.min(pull, 44), overflow: 'hidden',
+            fontSize: 12, color: C.muted, opacity: rebuilding ? 1 : Math.min(pull / 56, 1),
+          }}>
+            <span style={{ fontSize: 13 }}>{rebuilding ? '↻' : pull > 56 ? '↑' : '↓'}</span>
+            {rebuilding ? 'Refreshing your feed…' : pull > 56 ? 'Release to refresh' : 'Pull to refresh'}
+          </div>
+        )}
+        {/* demo-data banner (logged out / no feed configured) — gated on
+            !loading so signed-in users don't get a flash of it on cold start */}
+        {demo && !loading && (
           <Pressable onPress={goToAccount} scale={0.99}
             style={s('display:flex;align-items:center;gap:10px;margin:0 22px;padding:10px 13px;border-radius:14px;background:#eceaf9;border:1px solid #ddd9f7;width:calc(100% - 44px)')}>
             <span style={{ fontSize: 14, color: C.blue }}>✦</span>
@@ -59,11 +116,42 @@ export default function HomeScreen({ day, mobile, reduced, onAddTask, goToAccoun
             <span style={{ fontSize: 12, fontWeight: 700, color: C.blue }}>Set up ›</span>
           </Pressable>
         )}
-        {/* signed in, first feed still building */}
-        {pending && !needsReauth && (
+        {/* offline / server unreachable, showing the cached day */}
+        {stale && !demo && (
+          <div style={s('display:flex;align-items:center;gap:10px;margin:0 22px 10px;padding:10px 13px;border-radius:14px;background:#fdeee0;border:1px solid #f3d9be;width:calc(100% - 44px)')}>
+            <span style={{ fontSize: 14 }}>⚠</span>
+            <span style={{ flex: 1, fontSize: 12.5, color: '#7a4d12', textAlign: 'left' }}>
+              Offline — showing your last saved day{generatedAt ? ` (${agoLabel(generatedAt)})` : ''}
+            </span>
+          </div>
+        )}
+        {/* setup didn't finish: the token never reached the backend, so no
+            feed will ever build until the user reconnects */}
+        {pending && !needsReauth && signedIn && !tokenSynced && (
+          <Pressable onPress={goToAccount} scale={0.99}
+            style={s('display:flex;align-items:center;gap:10px;margin:0 22px;padding:10px 13px;border-radius:14px;background:#fdeee0;border:1px solid #f3d9be;width:calc(100% - 44px)')}>
+            <span style={{ fontSize: 14 }}>⚠</span>
+            <span style={{ flex: 1, fontSize: 12.5, color: '#7a4d12', textAlign: 'left' }}>Setup didn’t finish — reconnect Google to start your feed</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#b06d0a' }}>Fix ›</span>
+          </Pressable>
+        )}
+        {/* server unreachable AND nothing cached: say so — this used to
+            masquerade as "your first brief is being prepared" */}
+        {pending && feedError && (
+          <Pressable onPress={() => day.refresh()} scale={0.99}
+            style={s('display:flex;align-items:center;gap:10px;margin:0 22px;padding:10px 13px;border-radius:14px;background:#fdeee0;border:1px solid #f3d9be;width:calc(100% - 44px)')}>
+            <span style={{ fontSize: 14 }}>⚠</span>
+            <span style={{ flex: 1, fontSize: 12.5, color: '#7a4d12', textAlign: 'left' }}>Couldn’t reach WRK — check your connection</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: '#b06d0a' }}>Retry ›</span>
+          </Pressable>
+        )}
+        {/* signed in, first feed genuinely building */}
+        {pending && !needsReauth && !feedError && (!signedIn || tokenSynced) && (
           <div style={s('display:flex;align-items:center;gap:10px;margin:0 22px;padding:10px 13px;border-radius:14px;background:#eceaf9;border:1px solid #ddd9f7;width:calc(100% - 44px)')}>
             <span style={{ fontSize: 14, color: C.blue }}>✦</span>
-            <span style={{ flex: 1, fontSize: 12.5, color: '#3a3a44', textAlign: 'left' }}>Your first brief is being prepared — or build it now from Account → Refresh</span>
+            <span style={{ flex: 1, fontSize: 12.5, color: '#3a3a44', textAlign: 'left' }}>
+              {rebuilding ? 'Building your first brief — this takes about 30 seconds…' : 'Your first brief is being prepared — pull down to check'}
+            </span>
           </div>
         )}
         {/* Google token died — the daily screen must say so, not just Account */}
@@ -145,7 +233,9 @@ export default function HomeScreen({ day, mobile, reduced, onAddTask, goToAccoun
           </p>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 11, marginTop: 14 }}>
-            {!isPro && (
+            {/* upsell only when tapping it can actually start a purchase —
+                while billing is unwired it dead-ended in "coming soon" */}
+            {!isPro && signedIn && billingReady() && (
               <Pressable onPress={goToAccount} scale={0.99}
                 style={s('display:flex;align-items:center;gap:12px;padding:14px;border-radius:18px;background:#eceaf9;border:1px solid #ddd9f7;width:100%;text-align:left')}>
                 <span style={s('flex:none;width:30px;height:30px;border-radius:9px;background:#1a18f0;color:#fff;display:flex;align-items:center;justify-content:center;font-size:15px')}>✦</span>

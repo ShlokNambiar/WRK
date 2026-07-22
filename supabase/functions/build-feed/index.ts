@@ -12,7 +12,7 @@
 // own Supabase JWT (verified via admin.auth.getUser — that user only).
 // Browsers/webviews call the user path, so CORS is answered like store-token.
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import { buildEvents, buildEmailTasks, templateBrief, assemblePayload, computeStats, groupEventsByDay, applyMovedFrom, dayKeyInTz, usersDueNow, rateLimitRetryAfter, type Brief, type FeedEvent, type EmailTask, type FeedPayload } from "./buildPayload.ts";
+import { buildEvents, buildEmailTasks, templateBrief, assemblePayload, computeStats, groupEventsByDay, applyMovedFrom, dayKeyInTz, usersDueNow, rateLimitRetryAfter, safeTz, emailTasksAllowed, type Brief, type FeedEvent, type EmailTask, type FeedPayload } from "./buildPayload.ts";
 import { mintAccessToken, fetchWeekEvents, fetchActionableUnread, TokenRevokedError } from "./google.ts";
 import { claudeBrief } from "./claudeBrief.ts";
 import { geminiBrief } from "./geminiBrief.ts";
@@ -49,7 +49,7 @@ function aiBrief(events: FeedEvent[], emailTasks: EmailTask[]): Promise<Brief> {
 
 const AI_KEYS = { anthropic: ANTHROPIC_API_KEY || undefined, gemini: GEMINI_API_KEY || undefined };
 
-type UserRow = { user_id: string; tier: string; tz: string; name: string; email: string; brief_hour: number };
+type UserRow = { user_id: string; tier: string; tz: string; name: string; email: string; brief_hour: number; email_tasks_enabled: boolean };
 
 // The user's per-sender curation lists (mute = never, allow = always).
 async function loadEmailRules(userId: string): Promise<{ muteSet: Set<string>; allowSet: Set<string> }> {
@@ -75,7 +75,7 @@ async function loadUsers(userId?: string): Promise<UserRow[]> {
   if (ids.length === 0) return [];
 
   const [{ data: profs }, { data: ents }] = await Promise.all([
-    admin.from("profiles").select("id, name, email, tz, brief_hour").in("id", ids),
+    admin.from("profiles").select("id, name, email, tz, brief_hour, email_tasks_enabled").in("id", ids),
     admin.from("entitlements").select("user_id, tier").in("user_id", ids),
   ]);
   const pById = new Map((profs ?? []).map((p: any) => [p.id, p]));
@@ -85,10 +85,13 @@ async function loadUsers(userId?: string): Promise<UserRow[]> {
     return {
       user_id: id,
       tier: (eById.get(id) as any)?.tier ?? "free",
-      tz: p.tz ?? "Asia/Kolkata",
+      // safeTz here, the single point where tz leaves the profile row — a
+      // garbage stored value would otherwise crash every Intl call downstream
+      tz: safeTz(p.tz ?? "Asia/Kolkata"),
       name: p.name ?? "there",
       email: p.email ?? "",
       brief_hour: p.brief_hour ?? 7,
+      email_tasks_enabled: p.email_tasks_enabled ?? true,
     };
   });
 }
@@ -113,9 +116,11 @@ async function buildForUser(u: UserRow, now: Date): Promise<{ ok: boolean; reaso
     const days = groupEventsByDay(events, now, u.tz);
     const todayEvents = days[dayKeyInTz(now, u.tz)] ?? [];
 
+    // Gmail pipeline — Pro only, and skipped entirely when the user has
+    // switched email tasks off (profiles.email_tasks_enabled): no Gmail is
+    // ever fetched, emailTasks stays [].
     let emailTasks: ReturnType<typeof buildEmailTasks> = [];
-    let brief;
-    if (u.tier === "pro") {
+    if (emailTasksAllowed(u)) {
       const rawGmail = await fetchActionableUnread(access);
       // 1. user's mute/allow lists, then obvious-bulk rules, split the rest out
       const { muteSet, allowSet } = await loadEmailRules(u.user_id);
@@ -128,6 +133,12 @@ async function buildForUser(u: UserRow, now: Date): Promise<{ ok: boolean; reaso
         aiKept = undecided;
       }
       emailTasks = buildEmailTasks({ messages: [...allow, ...aiKept] });
+    }
+
+    // The AI brief is keyed on tier alone — a Pro user with email tasks off
+    // still gets it, built from calendar only.
+    let brief;
+    if (u.tier === "pro") {
       try {
         brief = await aiBrief(todayEvents, emailTasks);
       } catch (_e) {
@@ -172,16 +183,24 @@ async function buildForUser(u: UserRow, now: Date): Promise<{ ok: boolean; reaso
 }
 
 // Run the build loop and shape the response — shared by every auth path.
+// Bounded worker pool: up to 4 builds in flight, so one slow user never delays
+// the whole batch while Google/the AI provider still see capped pressure.
+const BUILD_CONCURRENCY = 4;
 async function runBuilds(users: UserRow[], now: Date): Promise<Response> {
   const results: Record<string, { ok: boolean; reason?: string }> = {};
-  for (const u of users) {
-    // One user's failure never aborts the batch.
-    try {
-      results[u.user_id] = await buildForUser(u, now);
-    } catch (e) {
-      results[u.user_id] = { ok: false, reason: "uncaught: " + (e as Error).message };
+  let next = 0;
+  const worker = async () => {
+    while (next < users.length) {
+      const u = users[next++];
+      // One user's failure never aborts the batch.
+      try {
+        results[u.user_id] = await buildForUser(u, now);
+      } catch (e) {
+        results[u.user_id] = { ok: false, reason: "uncaught: " + (e as Error).message };
+      }
     }
-  }
+  };
+  await Promise.all(Array.from({ length: Math.min(BUILD_CONCURRENCY, users.length) }, worker));
 
   const ok = Object.values(results).filter((r) => r.ok).length;
   return json({ users: users.length, built: ok, results }, 200);
@@ -221,9 +240,18 @@ Deno.serve(async (req) => {
   const userId = userData?.user?.id;
   if (uErr || !userId) return json({ error: "unauthorized" }, 401);
 
-  const { data: feedRow } = await admin.from("feeds").select("updated_at").eq("user_id", userId).maybeSingle();
-  const retryAfter = rateLimitRetryAfter(feedRow?.updated_at ?? null, now);
+  // Rate-limit on last_rebuild_at, stamped BEFORE any outbound work below —
+  // stamping only on success would let error paths retry without limit,
+  // hammering Google + the AI provider.
+  const { data: feedRow } = await admin.from("feeds").select("last_rebuild_at").eq("user_id", userId).maybeSingle();
+  const retryAfter = rateLimitRetryAfter(feedRow?.last_rebuild_at ?? null, now);
   if (retryAfter > 0) return json({ error: "rate_limited", retryAfter }, 429);
+  if (feedRow) {
+    await admin.from("feeds").update({ last_rebuild_at: now.toISOString() }).eq("user_id", userId);
+  } else {
+    // first build: seed a minimal row carrying the stamp (payload is NOT NULL)
+    await admin.from("feeds").insert({ user_id: userId, payload: {}, last_rebuild_at: now.toISOString() });
+  }
 
   let users: UserRow[];
   try {

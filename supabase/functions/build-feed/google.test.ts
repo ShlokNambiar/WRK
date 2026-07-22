@@ -53,6 +53,20 @@ test('fetchWeekEvents calls Calendar API with auth + a 7-day window', async () =
   assert.match(calls[0].url, /singleEvents=true/)
 })
 
+test('every google fetch carries an abort-timeout signal (hung endpoint cannot stall a build)', async () => {
+  const { fn, calls } = fakeFetch([
+    { match: 'oauth2.googleapis.com/token', json: { access_token: 'AT' } },
+    { match: 'calendar/v3/calendars/primary/events', json: { items: [] } },
+    { match: '/messages?', json: { messages: [{ id: 'm1', threadId: 't1' }] } },
+    { match: '/messages/m1', json: { threadId: 't1', payload: { headers: [] } } },
+  ])
+  await mintAccessToken('r', 'cid', 'csec', fn)
+  await fetchWeekEvents('AT', 'Asia/Kolkata', new Date('2026-07-01T01:00:00Z'), fn)
+  await fetchActionableUnread('AT', fn)
+  assert.equal(calls.length, 4)
+  for (const c of calls) assert.ok(c.init.signal instanceof AbortSignal, 'missing signal on ' + c.url)
+})
+
 test('fetchActionableUnread lists then fetches METADATA only (never full body)', async () => {
   const { fn, calls } = fakeFetch([
     { match: '/messages?', json: { messages: [{ id: 'm1', threadId: 't1' }, { id: 'm2', threadId: 't2' }] } },

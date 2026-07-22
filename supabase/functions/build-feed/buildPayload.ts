@@ -184,6 +184,21 @@ export function templateBrief(events: { kind?: string }[], emailTasks: { urgent?
   return { runs, stats, text: (lead + tail).trim() }
 }
 
+// --- timezone guard ---
+// profiles.tz is device/user-supplied; a garbage value makes every
+// Intl.DateTimeFormat call below throw and would kill the whole build. Every
+// tz consumer routes through safeTz (the builder does it once, where tz is
+// read off the profile row): validate, fall back to the app default.
+export const DEFAULT_TZ = 'Asia/Kolkata'
+export function safeTz(tz: string): string {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz })
+    return tz
+  } catch {
+    return DEFAULT_TZ
+  }
+}
+
 // --- 7-day grouping ---
 // en-CA gives YYYY-MM-DD — the day-key format the client indexes by.
 export function dayKeyInTz(now: Date, tz: string): string {
@@ -254,24 +269,31 @@ export function applyMovedFrom(events: FeedEvent[], oldPayload: FeedPayload | nu
 // unit-testable with fake clocks.
 export function usersDueNow<T extends { tz: string; brief_hour: number }>(users: T[], now: Date): T[] {
   return users.filter((u) => {
-    let hour: number
-    try {
-      hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: u.tz, hour: '2-digit', hourCycle: 'h23' }).format(now))
-    } catch {
-      // corrupt tz string: fall back to the app default rather than never building
-      hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', hour: '2-digit', hourCycle: 'h23' }).format(now))
-    }
+    // safeTz: a corrupt tz string falls back to the app default rather than never building
+    const hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: safeTz(u.tz), hour: '2-digit', hourCycle: 'h23' }).format(now))
     return hour === u.brief_hour
   })
 }
 
+// --- who gets the email pipeline? ---
+// Pro tier AND the user hasn't switched email tasks off
+// (profiles.email_tasks_enabled). When this is false the builder skips the
+// Gmail fetch entirely (emailTasks = []); the Pro AI brief itself is keyed on
+// tier alone and still runs, from calendar only.
+export function emailTasksAllowed(u: { tier: string; email_tasks_enabled?: boolean }): boolean {
+  return u.tier === 'pro' && u.email_tasks_enabled !== false
+}
+
 // --- user-invoked rebuild rate limit ---
-// One rebuild per 10 minutes. Returns 0 when allowed, else the number of whole
-// seconds until the window reopens (the 429 retryAfter value).
+// One rebuild per 10 minutes, keyed on feeds.last_rebuild_at — which the
+// builder stamps BEFORE any outbound work. (It used to key on updated_at,
+// which only moved on a successful build, so error paths allowed unlimited
+// retries hammering Google + the AI provider.) Returns 0 when allowed, else
+// the number of whole seconds until the window reopens (the 429 retryAfter).
 export const REBUILD_WINDOW_MS = 10 * 60 * 1000
-export function rateLimitRetryAfter(updatedAt: string | null | undefined, now: Date, windowMs = REBUILD_WINDOW_MS): number {
-  if (!updatedAt) return 0
-  const elapsed = now.getTime() - Date.parse(updatedAt)
+export function rateLimitRetryAfter(lastRebuildAt: string | null | undefined, now: Date, windowMs = REBUILD_WINDOW_MS): number {
+  if (!lastRebuildAt) return 0
+  const elapsed = now.getTime() - Date.parse(lastRebuildAt)
   if (Number.isNaN(elapsed) || elapsed >= windowMs) return 0
   return Math.ceil((windowMs - elapsed) / 1000)
 }

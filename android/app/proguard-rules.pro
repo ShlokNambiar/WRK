@@ -19,3 +19,17 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# Capacitor — keep the bridge, plugins, and their annotated methods.
+-keep class com.getcapacitor.** { *; }
+-keep public class * extends com.getcapacitor.Plugin
+-keepclassmembers class * {
+    @com.getcapacitor.annotation.CapacitorPlugin <methods>;
+    @com.getcapacitor.PluginMethod public <methods>;
+}
+-keepattributes *Annotation*
+
+# WebView JavaScript interfaces must keep their annotated methods.
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}

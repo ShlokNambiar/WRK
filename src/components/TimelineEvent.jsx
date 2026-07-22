@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { motion } from 'framer-motion'
 import AttendeeStack from './AttendeeStack.jsx'
 import Pressable from './Pressable.jsx'
@@ -6,11 +7,13 @@ import { C, FONT_SANS } from '../theme.js'
 
 // A single event on a timeline (Home + Calendar). `ev` is a buildTimeline()
 // row. The card opens the event detail; Join launches the meeting link.
-export default function TimelineEvent({ ev, isLast, reduced, onOpen }) {
+function TimelineEvent({ ev, isLast, reduced, onOpen }) {
   const t = reduced ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 30 }
   const hi = ev.highlighted
-  const timeColor = hi ? '#b06d0a' : C.ink
-  const ampmColor = hi ? '#cfa24a' : '#b0b0a8'
+  // amber darkened #b06d0a → #8a5606 (5.3:1 on the #fbecd2 highlight card) and
+  // the am/pm grays #b0b0a8/#cfa24a → #71706a/#8a5606 (≥4.6:1) for WCAG AA.
+  const timeColor = hi ? '#8a5606' : C.ink
+  const ampmColor = hi ? '#8a5606' : '#71706a'
 
   return (
     <motion.div
@@ -43,13 +46,13 @@ export default function TimelineEvent({ ev, isLast, reduced, onOpen }) {
       >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <div style={{ fontSize: 14.5, fontWeight: 600, color: hi ? '#7a4d04' : C.ink, fontFamily: FONT_SANS, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ev.title}</div>
-          <span style={{ flex: 'none', fontSize: 10.5, fontWeight: 700, color: hi ? '#b06d0a' : ev.accent, background: hi ? '#fff' : hexA(ev.accent, 0.1), padding: '3px 8px', borderRadius: 8 }}>{ev.durLabel}</span>
+          <span style={{ flex: 'none', fontSize: 10.5, fontWeight: 700, color: hi ? '#8a5606' : ev.accent, background: hi ? '#fff' : hexA(ev.accent, 0.1), padding: '3px 8px', borderRadius: 8 }}>{ev.durLabel}</span>
         </div>
 
         {/* moved badge */}
         {ev.movedBadge && (
           <div style={{ marginTop: 9 }}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 10.5, fontWeight: 700, color: '#b06d0a', background: '#fff', padding: '3px 8px', borderRadius: 8 }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 10.5, fontWeight: 700, color: '#8a5606', background: '#fff', padding: '3px 8px', borderRadius: 8 }}>
               <Clock /> {ev.movedBadge.toUpperCase()}
             </span>
           </div>
@@ -84,6 +87,8 @@ export default function TimelineEvent({ ev, isLast, reduced, onOpen }) {
   )
 }
 
+export default memo(TimelineEvent)
+
 function hexA(hex, a) {
   const n = parseInt(hex.slice(1), 16)
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`
@@ -95,5 +100,5 @@ const Pin = () => (
   <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M12 21s7-5.6 7-11a7 7 0 10-14 0c0 5.4 7 11 7 11z" stroke="#b0b0a8" strokeWidth="2" /><circle cx="12" cy="10" r="2.4" stroke="#b0b0a8" strokeWidth="2" /></svg>
 )
 const Clock = () => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M12 8v5l3 2" stroke="#b06d0a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /><circle cx="12" cy="13" r="8" stroke="#b06d0a" strokeWidth="2" /></svg>
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M12 8v5l3 2" stroke="#8a5606" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /><circle cx="12" cy="13" r="8" stroke="#8a5606" strokeWidth="2" /></svg>
 )

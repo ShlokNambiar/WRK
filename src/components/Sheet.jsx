@@ -1,14 +1,19 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { C } from '../theme.js'
 
 // Bottom sheet: scrim + spring-up panel. Controlled via `open`. Dismisses on
 // scrim tap, Escape, or a real swipe-down (the grabber isn't decorative).
 export default function Sheet({ open, onClose, label = 'Sheet', children, reduced }) {
+  const panelRef = useRef(null)
+
   // Escape to close + restore focus to whatever was focused before opening.
+  // On open, focus the panel itself so keyboard/TalkBack context moves into
+  // the sheet instead of staying on the trigger behind the scrim.
   useEffect(() => {
     if (!open) return
     const prev = typeof document !== 'undefined' ? document.activeElement : null
+    panelRef.current?.focus()
     const onKey = (e) => { if (e.key === 'Escape') onClose?.() }
     document.addEventListener('keydown', onKey)
     return () => {
@@ -32,10 +37,13 @@ export default function Sheet({ open, onClose, label = 'Sheet', children, reduce
             initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
             transition={reduced ? { duration: 0 } : { type: 'spring', stiffness: 380, damping: 36 }}
             onClick={(e) => e.stopPropagation()}
+            ref={panelRef}
+            tabIndex={-1}
             style={{
               position: 'absolute', left: 0, right: 0, bottom: 0, background: C.paper,
               borderRadius: '32px 32px 0 0', padding: '0 20px calc(24px + env(safe-area-inset-bottom))',
               boxShadow: '0 -22px 54px rgba(0,0,0,.32)', maxHeight: '88%', overflowY: 'auto',
+              outline: 'none',
             }}
             role="dialog" aria-modal="true" aria-label={label}
           >

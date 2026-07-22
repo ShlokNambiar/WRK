@@ -12,6 +12,7 @@ dist
 !.env.example
 *.keystore
 *.jks
+android/key.properties
 google-services.json
 
 # Old single-user workaround scripts (contain a write secret; local-only)

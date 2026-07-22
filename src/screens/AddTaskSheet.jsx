@@ -29,7 +29,9 @@ export default function AddTaskSheet({ day, editing = null, onClose, onDirtyChan
   const existingRemind = editing?.remindAt && new Date(editing.remindAt) > now ? editing.remindAt : null
   const [remind, setRemind] = useState(existingRemind ? 'Keep' : 'Off')
   const [remindTouched, setRemindTouched] = useState(false)
-  const eveningPast = now.getHours() >= 17.5 // after ~5:30pm "this evening" is gone
+  // after ~5:30pm "this evening" is gone (getHours() is an integer — the
+  // fractional compare silently meant 6:00pm before)
+  const eveningPast = now.getHours() + now.getMinutes() / 60 >= 17.5
   const eveningLabel = eveningPast ? 'Tmrw evening' : 'This evening'
   const keepLabel = existingRemind
     ? new Date(existingRemind).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
@@ -105,7 +107,7 @@ export default function AddTaskSheet({ day, editing = null, onClose, onDirtyChan
   return (
     <div style={{ fontFamily: FONT_SANS }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
-        <Pressable onPress={onClose} style={{ fontSize: 15, fontWeight: 500, color: '#8a8a82', padding: '10px 6px', margin: '-10px -6px' }}>Cancel</Pressable>
+        <Pressable onPress={onClose} style={{ fontSize: 15, fontWeight: 500, color: '#6f6e63', padding: '12px 8px', margin: '-12px -8px', minHeight: 44 }}>Cancel</Pressable>
         <span style={{ fontFamily: FONT_SERIF, fontWeight: 600, fontSize: 18, color: C.ink }}>
           {editing ? 'Edit task' : added ? `New task · ${added} added` : 'New task'}
         </span>
@@ -202,8 +204,8 @@ function Chip({ on, onPress, children, tone }) {
   const onFg = tone === 'red' ? C.red : C.blue
   return (
     <Pressable onPress={onPress} ariaPressed={on} style={{
-      fontSize: 12.5, fontWeight: 600, padding: '10px 12px', borderRadius: 12, minHeight: 40,
-      background: on ? onBg : 'transparent', color: on ? onFg : '#7c7b72',
+      fontSize: 12.5, fontWeight: 600, padding: '11px 12px', borderRadius: 12, minHeight: 44,
+      background: on ? onBg : 'transparent', color: on ? onFg : '#6f6e63',
     }}>{children}</Pressable>
   )
 }

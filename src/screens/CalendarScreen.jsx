@@ -55,7 +55,7 @@ export default function CalendarScreen({ day, mobile, reduced, onAddTask, openEv
                 style={{ ...navBtn, width: 'auto', padding: '0 12px', fontSize: 12, fontWeight: 700, color: C.blue }}>Today</Pressable>
             )}
             <Pressable ariaLabel="Next week" onPress={() => stepWeek(1)} style={navBtn}>›</Pressable>
-            <Pressable ariaLabel="New task" onPress={onAddTask} style={{ width: 40, height: 40, borderRadius: '50%', background: C.blue, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 22, fontWeight: 300, boxShadow: '0 6px 16px rgba(26,24,240,.34)' }}>+</Pressable>
+            <Pressable ariaLabel="New task" onPress={onAddTask} style={{ width: 44, height: 44, borderRadius: '50%', background: C.blue, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: 22, fontWeight: 300, boxShadow: '0 6px 16px rgba(26,24,240,.34)' }}>+</Pressable>
           </div>
         </div>
         {/* week strip — tap a day to view it */}
@@ -104,7 +104,7 @@ export default function CalendarScreen({ day, mobile, reduced, onAddTask, openEv
 }
 
 const navBtn = {
-  width: 40, height: 40, borderRadius: '50%', background: '#fff', display: 'flex',
+  width: 44, height: 44, borderRadius: '50%', background: '#fff', display: 'flex',
   alignItems: 'center', justifyContent: 'center', color: '#4a4a44', fontSize: 18,
   fontWeight: 600, boxShadow: '0 2px 10px rgba(0,0,0,.07)',
 }

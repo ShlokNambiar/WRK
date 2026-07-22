@@ -19,10 +19,30 @@ const GRANT = new Set([
 ]);
 const REVOKE = new Set(["EXPIRATION"]);
 
+// Constant-time secret comparison: a plain !== short-circuits at the first
+// differing character, which leaks match-length via response timing. Comparing
+// SHA-256 digests makes the loop length fixed regardless of either input.
+async function secretMatches(given: string, expected: string): Promise<boolean> {
+  const enc = new TextEncoder();
+  const [a, b] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(given)),
+    crypto.subtle.digest("SHA-256", enc.encode(expected)),
+  ]);
+  const va = new Uint8Array(a), vb = new Uint8Array(b);
+  let diff = 0;
+  for (let i = 0; i < va.length; i++) diff |= va[i] ^ vb[i];
+  return diff === 0;
+}
+
+// Reject replayed events: RevenueCat stamps event_timestamp_ms; anything older
+// than 24h is a replay (or hopelessly stale) and must not mutate entitlements.
+const MAX_EVENT_AGE_MS = 24 * 60 * 60 * 1000;
+
 Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ error: "method not allowed" }, 405);
   // Shared-secret auth (configured in RevenueCat). Empty secret => reject all.
-  if (!RC_WEBHOOK_SECRET || req.headers.get("Authorization") !== RC_WEBHOOK_SECRET) {
+  const given = req.headers.get("Authorization") ?? "";
+  if (!RC_WEBHOOK_SECRET || !(await secretMatches(given, RC_WEBHOOK_SECRET))) {
     return json({ error: "unauthorized" }, 401);
   }
 
@@ -32,6 +52,11 @@ Deno.serve(async (req) => {
   const userId: string | undefined = event?.app_user_id;
   const type: string | undefined = event?.type;
   if (!userId || !type) return json({ error: "missing app_user_id/type" }, 400);
+
+  const ts = event?.event_timestamp_ms;
+  if (typeof ts === "number" && Date.now() - ts > MAX_EVENT_AGE_MS) {
+    return json({ error: "stale event" }, 400);
+  }
 
   let tier: string | null = null;
   if (GRANT.has(type)) tier = "pro";

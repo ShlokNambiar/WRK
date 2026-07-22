@@ -25,10 +25,16 @@ export function loadState(owner) {
   }
 }
 
+// Returns false when the write failed (quota / private mode) so the caller can
+// warn once — otherwise adds LOOK saved (they're in React state) but vanish on
+// the next launch.
 export function saveState(owner, state) {
   try {
     localStorage.setItem(keyFor(owner), JSON.stringify(state))
-  } catch {}
+    return true
+  } catch {
+    return false
+  }
 }
 
 export function clearState(owner) {

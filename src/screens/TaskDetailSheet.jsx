@@ -39,7 +39,7 @@ export default function TaskDetailSheet({ task, day, onClose, onSnack }) {
     <div style={{ fontFamily: FONT_SANS }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 6 }}>
         <h2 style={{ fontFamily: FONT_SERIF, fontWeight: 600, fontSize: 22, lineHeight: 1.2, color: C.ink, margin: 0 }}>{task.title}</h2>
-        <Pressable onPress={onClose} ariaLabel="Close" style={{ flex: 'none', width: 34, height: 34, borderRadius: '50%', background: '#eeede7', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, color: C.inkSoft }}>✕</Pressable>
+        <Pressable onPress={onClose} ariaLabel="Close" style={{ flex: 'none', width: 44, height: 44, borderRadius: '50%', background: '#eeede7', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16, color: C.inkSoft }}>✕</Pressable>
       </div>
       <div style={{ fontSize: 13, color: C.muted, marginBottom: 18 }}>
         {task.source === 'Email' ? 'Drafted from your inbox' : 'Drafted from your calendar'} · {task.meta}

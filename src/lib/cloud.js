@@ -30,15 +30,18 @@ export async function removeEmailRule(sender) {
 
 // ---- profile prefs ----
 // Keep tz current on every launch (it was previously written only on first
-// consent, so travelers got feeds keyed to a stale timezone forever) and let
-// the user pick the hour their brief is built.
-export async function syncProfilePrefs({ briefHour } = {}) {
+// consent, so travelers got feeds keyed to a stale timezone forever), let the
+// user pick the hour their brief is built, and honor the email-tasks switch
+// server-side (build-feed skips the Gmail fetch entirely when it's off).
+export async function syncProfilePrefs({ briefHour, emailTasks } = {}) {
   try {
-    const { data: u } = await supabase.auth.getUser()
-    if (!u?.user) return false
+    const { data: s } = await supabase.auth.getSession()
+    const uid = s?.session?.user?.id
+    if (!uid) return false
     const patch = { tz: Intl.DateTimeFormat().resolvedOptions().timeZone }
     if (Number.isInteger(briefHour) && briefHour >= 0 && briefHour <= 23) patch.brief_hour = briefHour
-    const { error } = await supabase.from('profiles').update(patch).eq('id', u.user.id)
+    if (typeof emailTasks === 'boolean') patch.email_tasks_enabled = emailTasks
+    const { error } = await supabase.from('profiles').update(patch).eq('id', uid)
     return !error
   } catch {
     return false
@@ -50,10 +53,11 @@ export async function syncProfilePrefs({ briefHour } = {}) {
 // debounced by the caller; pull happens once per sign-in.
 export async function pushTaskState(state) {
   try {
-    const { data: u } = await supabase.auth.getUser()
-    if (!u?.user) return false
+    const { data: s } = await supabase.auth.getSession()
+    const uid = s?.session?.user?.id
+    if (!uid) return false
     const { error } = await supabase.from('user_state').upsert(
-      { user_id: u.user.id, state, updated_at: new Date().toISOString() },
+      { user_id: uid, state, updated_at: new Date().toISOString() },
       { onConflict: 'user_id' },
     )
     return !error
@@ -69,6 +73,27 @@ export async function pullTaskState() {
     return data
   } catch {
     return null
+  }
+}
+
+// ---- account deletion (Play-required) ----
+// POSTs the user's JWT to the delete-account Edge Function, which removes every
+// server-side trace (profile, feed, task backup, email rules, entitlement, the
+// Vault-encrypted Google token) and finally the auth user itself.
+// Returns 'deleted' | 'error'.
+export async function deleteAccount() {
+  try {
+    const { data: s } = await supabase.auth.getSession()
+    const token = s?.session?.access_token
+    if (!token) return 'error'
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/delete-account`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: '{}',
+    })
+    return res.ok ? 'deleted' : 'error'
+  } catch {
+    return 'error'
   }
 }
 

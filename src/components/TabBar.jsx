@@ -10,6 +10,8 @@ const cell = {
   display: 'flex', alignItems: 'center', justifyContent: 'center',
 }
 
+// Inactive icon color #82817a: 3.6:1 vs the paper bg — clears the 3:1 WCAG
+// minimum for UI components (the old #b8b8b0 was 1.9:1).
 const TABS = ['home', 'tasks', 'calendar', 'card']
 
 export default function TabBar({ active = 'home', onTab, onAdd, reduced }) {
@@ -85,33 +87,33 @@ export default function TabBar({ active = 'home', onTab, onAdd, reduced }) {
         {/* home / active — hamburger lines */}
         <Pressable ariaLabel="Home" onPress={() => onTab?.('home')} aria-current={active === 'home' ? 'page' : undefined} style={cell}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 3, pointerEvents: 'none' }}>
-            <span style={{ width: 18, height: 2.6, background: active === 'home' ? '#fff' : '#b8b8b0', borderRadius: 2, transition: 'background-color .2s' }} />
-            <span style={{ width: 18, height: 2.6, background: active === 'home' ? '#fff' : '#b8b8b0', borderRadius: 2, transition: 'background-color .2s' }} />
-            <span style={{ width: 12, height: 2.6, background: active === 'home' ? '#fff' : '#b8b8b0', borderRadius: 2, transition: 'background-color .2s' }} />
+            <span style={{ width: 18, height: 2.6, background: active === 'home' ? '#fff' : '#82817a', borderRadius: 2, transition: 'background-color .2s' }} />
+            <span style={{ width: 18, height: 2.6, background: active === 'home' ? '#fff' : '#82817a', borderRadius: 2, transition: 'background-color .2s' }} />
+            <span style={{ width: 12, height: 2.6, background: active === 'home' ? '#fff' : '#82817a', borderRadius: 2, transition: 'background-color .2s' }} />
           </div>
         </Pressable>
 
         {/* tasks — rounded-square check */}
         <Pressable ariaLabel="Tasks" onPress={() => onTab?.('tasks')} aria-current={active === 'tasks' ? 'page' : undefined} style={cell}>
-          <div style={{ width: 18, height: 18, borderRadius: 6, border: `2.5px solid ${active === 'tasks' ? '#fff' : '#b8b8b0'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'border-color .2s', pointerEvents: 'none' }}>
-            <span style={{ fontSize: 10, fontWeight: 800, color: active === 'tasks' ? '#fff' : '#b8b8b0', lineHeight: 1 }}>✓</span>
+          <div style={{ width: 18, height: 18, borderRadius: 6, border: `2.5px solid ${active === 'tasks' ? '#fff' : '#82817a'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'border-color .2s', pointerEvents: 'none' }}>
+            <span style={{ fontSize: 10, fontWeight: 800, color: active === 'tasks' ? '#fff' : '#82817a', lineHeight: 1 }}>✓</span>
           </div>
         </Pressable>
 
         {/* calendar */}
         <Pressable ariaLabel="Calendar" onPress={() => onTab?.('calendar')} aria-current={active === 'calendar' ? 'page' : undefined} style={cell}>
-          <div style={{ position: 'relative', width: 18, height: 17, borderRadius: 4, border: `2.5px solid ${active === 'calendar' ? '#fff' : '#b8b8b0'}`, transition: 'border-color .2s', pointerEvents: 'none' }}>
-            <span style={{ position: 'absolute', top: -5, left: 3, width: 2.5, height: 4, background: active === 'calendar' ? '#fff' : '#b8b8b0', borderRadius: 2 }} />
-            <span style={{ position: 'absolute', top: -5, right: 3, width: 2.5, height: 4, background: active === 'calendar' ? '#fff' : '#b8b8b0', borderRadius: 2 }} />
-            <span style={{ position: 'absolute', top: 3, left: -0.5, right: -0.5, height: 2.5, background: active === 'calendar' ? '#fff' : '#b8b8b0' }} />
+          <div style={{ position: 'relative', width: 18, height: 17, borderRadius: 4, border: `2.5px solid ${active === 'calendar' ? '#fff' : '#82817a'}`, transition: 'border-color .2s', pointerEvents: 'none' }}>
+            <span style={{ position: 'absolute', top: -5, left: 3, width: 2.5, height: 4, background: active === 'calendar' ? '#fff' : '#82817a', borderRadius: 2 }} />
+            <span style={{ position: 'absolute', top: -5, right: 3, width: 2.5, height: 4, background: active === 'calendar' ? '#fff' : '#82817a', borderRadius: 2 }} />
+            <span style={{ position: 'absolute', top: 3, left: -0.5, right: -0.5, height: 2.5, background: active === 'calendar' ? '#fff' : '#82817a' }} />
           </div>
         </Pressable>
 
         {/* account / person */}
         <Pressable ariaLabel="Account" onPress={() => onTab?.('card')} aria-current={active === 'card' ? 'page' : undefined} style={cell}>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" style={{ pointerEvents: 'none' }}>
-            <circle cx="12" cy="8" r="3.6" stroke={active === 'card' ? '#fff' : '#b8b8b0'} strokeWidth="2" />
-            <path d="M5.5 19.5c1-3.4 3.7-5 6.5-5s5.5 1.6 6.5 5" stroke={active === 'card' ? '#fff' : '#b8b8b0'} strokeWidth="2" strokeLinecap="round" />
+            <circle cx="12" cy="8" r="3.6" stroke={active === 'card' ? '#fff' : '#82817a'} strokeWidth="2" />
+            <path d="M5.5 19.5c1-3.4 3.7-5 6.5-5s5.5 1.6 6.5 5" stroke={active === 'card' ? '#fff' : '#82817a'} strokeWidth="2" strokeLinecap="round" />
           </svg>
         </Pressable>
       </nav>

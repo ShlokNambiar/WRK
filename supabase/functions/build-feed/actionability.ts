@@ -13,6 +13,10 @@
 // format=metadata). Same class of data the brief already sends.
 import type { Candidate } from './emailFilter.ts'
 
+// Bounded so a hung API can't stall the build; a timeout throws like any other
+// error and the caller keeps the undecided set.
+const AI_TIMEOUT_MS = 30_000
+
 const SYSTEM = `You triage an inbox. For each numbered email you get only its subject and sender. Decide which emails plausibly need a PERSONAL REPLY from the user.
 - NEEDS a reply: a real person writing to them, a question, a request awaiting their response.
 - Does NOT need a reply (exclude): bank/transaction alerts, account statements, receipts, invoices, OTP/verification codes, order/shipping/delivery updates, security or login alerts, newsletters, marketing/promotions, social or app or system notifications, calendar invites, automated "do not reply" mail.
@@ -32,6 +36,7 @@ async function askModel(
       method: 'POST',
       headers: { 'x-api-key': keys.anthropic, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'claude-haiku-4-5', max_tokens: 300, system: SYSTEM, messages: [{ role: 'user', content: user }] }),
+      signal: AbortSignal.timeout(AI_TIMEOUT_MS),
     })
     if (!res.ok) throw new Error('actionability: anthropic status ' + res.status)
     const data = await res.json()
@@ -48,6 +53,7 @@ async function askModel(
         contents: [{ parts: [{ text: user }] }],
         generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 300, thinkingConfig: { thinkingBudget: 0 } },
       }),
+      signal: AbortSignal.timeout(AI_TIMEOUT_MS),
     })
     if (!res.ok) throw new Error('actionability: gemini status ' + res.status)
     const data = await res.json()
