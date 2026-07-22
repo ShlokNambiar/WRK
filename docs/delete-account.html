@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WRK — Delete your account &amp; data</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.6; max-width: 720px; margin: 0 auto; padding: 32px 22px 64px; color: #26251f; background: #f7f7f4; }
+  @media (prefers-color-scheme: dark) { body { color: #e8e7e1; background: #1a1a17; } a { color: #9db1ff; } }
+  h1 { font-size: 28px; margin: 0 0 16px; }
+  h2 { font-size: 19px; margin: 32px 0 8px; }
+  a { color: #1a18f0; }
+  ul { padding-left: 22px; }
+  li { margin: 6px 0; }
+</style>
+</head>
+<body>
+<h1>WRK — Delete your account &amp; data</h1>
+
+<p>WRK ("the app", package <code>com.metis.wrk</code>) lets you permanently delete your account and every piece of data associated with it.</p>
+
+<h2>What gets deleted</h2>
+<p>Deletion removes, immediately and permanently:</p>
+<ul>
+  <li>your WRK account (the sign-in itself)</li>
+  <li>your derived daily feed (schedule summary, brief, email-task list)</li>
+  <li>your task backup</li>
+  <li>your email sender rules (mutes/allows)</li>
+  <li>your subscription entitlement record</li>
+  <li>the encrypted Google refresh token (WRK's read-only access to your Calendar/Gmail ends at that moment)</li>
+</ul>
+<p>Your Google account itself is never touched. Nothing is retained after deletion — WRK stores no email bodies or raw calendar data to begin with (see the <a href="PRIVACY.html">privacy policy</a>).</p>
+
+<h2>How to delete</h2>
+<p><strong>In the app (instant):</strong> open WRK → <strong>Account</strong> → scroll down → <strong>Delete account &amp; data</strong> → confirm.</p>
+<p><strong>Without the app</strong> (e.g. already uninstalled): email <strong>shlok@pepl.life</strong> with the subject "Delete my WRK account" from the Google address you signed in with. Your account and all data will be deleted within 7 days and you'll get a confirmation reply.</p>
+<p>You can also revoke WRK's Google access at any time at <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a> — this stops all data access immediately, independent of account deletion.</p>
+</body>
+</html>
