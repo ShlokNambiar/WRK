@@ -44,12 +44,39 @@ export type Brief = {
   text: string
 }
 
+// Claude-managed HQ task (spec: docs/superpowers/specs/2026-07-22-wrk-hq-mode-design.md).
+// Rows live in hq_tasks, service-role-written; only open ones reach the feed.
+export type HqRow = {
+  id: string
+  title: string
+  note: string | null
+  why: string | null
+  due_date: string | null
+  remind_at: string | null
+  urgent: boolean
+  status: string
+}
+
+export type HqTask = {
+  id: string // 'hq:<uuid>'
+  title: string
+  source: 'HQ'
+  meta: string
+  note: string
+  why: string
+  dueDate: string | null
+  remindAt: string | null
+  urgent: boolean
+  bucket: 'overdue' | 'today' | 'week'
+}
+
 export type FeedPayload = {
   generatedAt: string
   profile: { name: string; email: string; avatarUrl: string | null }
   brief: Brief | null
   days: Record<string, FeedEvent[]>
   emailTasks: EmailTask[]
+  hqTasks: HqTask[]
 }
 
 // --- Google Calendar events.list item -> FeedEvent ---
@@ -298,12 +325,32 @@ export function rateLimitRetryAfter(lastRebuildAt: string | null | undefined, no
   return Math.ceil((windowMs - elapsed) / 1000)
 }
 
+// --- Claude-managed HQ tasks: hq_tasks rows -> feed shape ---
+// ISO date strings compare lexically, so bucketing needs no Date math.
+export function mapHqTasks(rows: HqRow[], todayKey: string): HqTask[] {
+  return rows
+    .filter((r) => r.status === 'open')
+    .map((r) => ({
+      id: `hq:${r.id}`,
+      title: r.title,
+      source: 'HQ' as const,
+      meta: 'planned by Claude',
+      note: r.note || '',
+      why: r.why || '',
+      dueDate: r.due_date,
+      remindAt: r.remind_at,
+      urgent: !!r.urgent,
+      bucket: !r.due_date ? 'today' : r.due_date < todayKey ? 'overdue' : r.due_date > todayKey ? 'week' : 'today',
+    }))
+}
+
 // --- Final assembly ---
 export function assemblePayload(args: {
   profile: { name: string; email: string; avatarUrl: string | null }
   brief: Brief | null
   days: Record<string, FeedEvent[]>
   emailTasks: EmailTask[]
+  hqTasks?: HqTask[]
   now: Date
 }): FeedPayload {
   return {
@@ -312,5 +359,6 @@ export function assemblePayload(args: {
     brief: args.brief,
     days: args.days,
     emailTasks: args.emailTasks,
+    hqTasks: args.hqTasks ?? [],
   }
 }

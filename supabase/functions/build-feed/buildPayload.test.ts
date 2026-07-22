@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildEvents, buildEmailTasks, templateBrief, assemblePayload, computeStats, groupEventsByDay, applyMovedFrom, dayKeyInTz, usersDueNow, rateLimitRetryAfter, safeTz, DEFAULT_TZ, emailTasksAllowed } from './buildPayload.ts'
+import { buildEvents, buildEmailTasks, templateBrief, assemblePayload, computeStats, groupEventsByDay, applyMovedFrom, dayKeyInTz, usersDueNow, rateLimitRetryAfter, safeTz, DEFAULT_TZ, emailTasksAllowed, mapHqTasks } from './buildPayload.ts'
 
 // ---- buildEvents: Google Calendar events.list -> FeedEvent[] ----
 test('buildEvents maps a timed event with all fields', () => {
@@ -434,4 +434,43 @@ test('assemblePayload produces the documented multi-day shape', () => {
   const blob = JSON.stringify(payload)
   assert.ok(!blob.includes('SECRET_BODY_TEXT'), 'raw email body leaked into feed')
   assert.ok(!blob.includes('ANOTHER_SECRET'), 'raw email body leaked into feed')
+})
+
+// ---- mapHqTasks: Claude-managed hq_tasks rows -> feed hqTasks ----
+const hqRow = (over = {}) => ({
+  id: 'aaaaaaaa-0000-0000-0000-000000000001', title: 'Refresh Upstox token',
+  note: 'expires 03:30 IST', why: 'trading day prep', due_date: '2026-07-22',
+  remind_at: '2026-07-22T21:00:00+05:30', urgent: false, status: 'open', ...over,
+})
+
+test('mapHqTasks maps an open row to an hq: task with bucket from due_date', () => {
+  const [t] = mapHqTasks([hqRow()], '2026-07-22')
+  assert.equal(t.id, 'hq:aaaaaaaa-0000-0000-0000-000000000001')
+  assert.equal(t.source, 'HQ')
+  assert.equal(t.bucket, 'today')
+  assert.equal(t.dueDate, '2026-07-22')
+  assert.equal(t.remindAt, '2026-07-22T21:00:00+05:30')
+  assert.equal(t.why, 'trading day prep')
+  assert.equal(t.meta, 'planned by Claude')
+})
+
+test('mapHqTasks buckets past due as overdue, future as week, null as today', () => {
+  assert.equal(mapHqTasks([hqRow({ due_date: '2026-07-20' })], '2026-07-22')[0].bucket, 'overdue')
+  assert.equal(mapHqTasks([hqRow({ due_date: '2026-07-25' })], '2026-07-22')[0].bucket, 'week')
+  assert.equal(mapHqTasks([hqRow({ due_date: null, remind_at: null })], '2026-07-22')[0].bucket, 'today')
+})
+
+test('mapHqTasks drops non-open rows and tolerates missing text fields', () => {
+  assert.equal(mapHqTasks([hqRow({ status: 'done' }), hqRow({ status: 'dismissed' })], '2026-07-22').length, 0)
+  const [t] = mapHqTasks([hqRow({ note: null, why: null })], '2026-07-22')
+  assert.equal(t.note, '')
+  assert.equal(t.why, '')
+})
+
+test('assemblePayload carries hqTasks (and defaults to [] when absent)', () => {
+  const base = { profile: { name: 'S', email: 's@x.com', avatarUrl: null }, brief: null, days: {}, emailTasks: [], now: new Date('2026-07-22T09:00:00+05:30') }
+  const withHq = assemblePayload({ ...base, hqTasks: mapHqTasks([hqRow()], '2026-07-22') })
+  assert.equal(withHq.hqTasks.length, 1)
+  const without = assemblePayload(base)
+  assert.deepEqual(without.hqTasks, [])
 })

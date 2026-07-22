@@ -12,7 +12,7 @@
 // own Supabase JWT (verified via admin.auth.getUser — that user only).
 // Browsers/webviews call the user path, so CORS is answered like store-token.
 import { createClient } from "jsr:@supabase/supabase-js@2";
-import { buildEvents, buildEmailTasks, templateBrief, assemblePayload, computeStats, groupEventsByDay, applyMovedFrom, dayKeyInTz, usersDueNow, rateLimitRetryAfter, safeTz, emailTasksAllowed, type Brief, type FeedEvent, type EmailTask, type FeedPayload } from "./buildPayload.ts";
+import { buildEvents, buildEmailTasks, templateBrief, assemblePayload, computeStats, groupEventsByDay, applyMovedFrom, dayKeyInTz, usersDueNow, rateLimitRetryAfter, safeTz, emailTasksAllowed, mapHqTasks, type Brief, type FeedEvent, type EmailTask, type FeedPayload, type HqRow } from "./buildPayload.ts";
 import { mintAccessToken, fetchWeekEvents, fetchActionableUnread, TokenRevokedError } from "./google.ts";
 import { claudeBrief } from "./claudeBrief.ts";
 import { geminiBrief } from "./geminiBrief.ts";
@@ -153,9 +153,20 @@ async function buildForUser(u: UserRow, now: Date): Promise<{ ok: boolean; reaso
     // miscount can never surface wrong numbers.
     brief.stats = computeStats(todayEvents, emailTasks);
 
+    // Claude-managed HQ tasks (HQ mode): open rows only, never fail the build
+    // over them — accounts without HQ data get an empty list.
+    let hqTasks: ReturnType<typeof mapHqTasks> = [];
+    try {
+      const { data: hqRows } = await admin.from("hq_tasks")
+        .select("id,title,note,why,due_date,remind_at,urgent,status")
+        .eq("user_id", u.user_id).eq("status", "open")
+        .order("due_date", { ascending: true, nullsFirst: false }).limit(50);
+      hqTasks = mapHqTasks((hqRows ?? []) as HqRow[], dayKeyInTz(now, u.tz));
+    } catch (_e) { /* hq merge is best-effort */ }
+
     const payload = assemblePayload({
       profile: { name: u.name, email: u.email, avatarUrl: null },
-      brief, days, emailTasks, now,
+      brief, days, emailTasks, hqTasks, now,
     });
 
     const { error: upErr } = await admin.from("feeds").upsert({
